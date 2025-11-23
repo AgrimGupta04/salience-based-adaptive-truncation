@@ -1,0 +1,41 @@
+# Data handling
+pandas>=2.0.3
+numpy>=1.24.4
+pyarrow>=11.0.0
+fsspec==2023.6.0
+
+# NLP + LLMs (Core components pinned to latest stable APIs)
+transformers>=4.42.0
+datasets>=2.11.0
+sentence-transformers>=3.0.1
+accelerate>=0.30.0
+torch>=2.3.0
+tiktoken>=0.7.0
+huggingface-hub>=0.11.1
+
+# Vector stores & retrieval
+chromadb>=0.5.3
+faiss-cpu>=1.8.0  # optional, for large-scale indexing
+
+# Evaluation metrics
+rouge-score>=0.1.2
+bert-score>=0.3.13
+scipy>=1.13.0
+
+# Visualization
+matplotlib>=3.8.0
+seaborn>=0.13.2
+
+# Utility + Experiment tracking
+tqdm>=4.66.0
+scikit-learn>=1.5.0
+langchain>=0.4.0
+langchain-community>=0.4.0
+
+# Optional: model serving / APIs (if you plan to expose demos)
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Development tools
+jupyterlab>=4.2.0
+notebook>=7.1.0

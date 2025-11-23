@@ -1,0 +1,83 @@
+#############################
+# Python cache & build files
+#############################
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+#############################
+# Virtual environments
+#############################
+.env
+.env*/
+venv/
+venv*/
+.venv/
+.venv*/
+pip-wheel-metadata/
+
+#############################
+# OS & editor files
+#############################
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+#############################
+# Jupyter Notebook
+#############################
+.ipynb_checkpoints/
+*.ipynb_backup
+
+#############################
+# Project Data (SHOULD NOT BE IN GIT)
+#############################
+
+# Entire data directory:
+data/
+
+# If you decide to keep empty structure, allow README:
+!data/README.md
+
+# Processed, cache, or derived artifacts:
+data/
+data/processed/
+data/raw/
+data/processed/embeddings/
+data/processed/truncated_texts/
+data/processed/summaries/
+
+# Large model caches
+models/
+model_cache/
+huggingface/
+hf_cache/
+transformers_cache/
+*/pytorch_model.bin
+*/tf_model.h5
+
+# HuggingFace default cache dirs
+~/.cache/huggingface/
+~/.cache/torch/
+
+#############################
+# Results, plots, outputs
+#############################
+results/
+results/*
+!results/README.md
+
+#############################
+# Experiment outputs
+########
+
+data/
+results/
+*.arrow
