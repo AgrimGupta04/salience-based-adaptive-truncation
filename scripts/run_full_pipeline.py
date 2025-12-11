@@ -143,7 +143,7 @@ def choose_summarization_model_from_truncated(truncated_json_path: str) -> str:
         ta = r.get("tokens_after")
         if ta is None:
             txt = r.get("truncated_text", "")
-            ta = max(1, int(len(txt) / 4))   # heuristic fallback
+            ta = max(1, int(len(txt) / 4))   ## heuristic fallback
         tokens.append(ta)
 
     avg_tokens = float(np.mean(tokens)) if tokens else 1.0
@@ -153,7 +153,7 @@ def choose_summarization_model_from_truncated(truncated_json_path: str) -> str:
     if avg_tokens <= 1024:
         return "facebook/bart-large-cnn"
     if avg_tokens <= 4096:
-        return "google/long-t5-local-base"      # supports longer input than BART
+        return "google/long-t5-local-base"      ## supports longer input than BART
     if avg_tokens <= 16384:
         return "allenai/led-base-16384"
     return "allenai/led-base-16384"
@@ -188,7 +188,7 @@ def run_summarization(dataset_name: str, cfg: dict):
         print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
 
     # Choose summarizer for truncated inputs
-    truncated_file = f"data/processed/truncated_texts/{dataset_name}_token_budget_{cfg['budget']}_truncated_summaries.json"
+    truncated_file = f"data/processed/truncated_texts/{dataset_name}_{cfg['budget']}_truncated_summaries.json"
     if not os.path.exists(truncated_file):
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
 
@@ -207,7 +207,7 @@ def run_evaluation(dataset_name: str, cfg: dict):
 
     # expected summary filenames created by summarizer functions
     full_summary_file = f"data/processed/summaries/{os.path.basename(f'{dataset_name}_pairs')}_full_summaries.json"
-    trunc_summary_file = f"data/processed/summaries/{dataset_name}_token_budget_{cfg['budget']}_truncated_summaries.json"
+    trunc_summary_file = f"data/processed/summaries/{dataset_name}_{cfg['budget']}_truncated_summaries.json"
 
     # Prior code used slightly different filenames; handle possible variants
     # Try standard names first, fall back to alternative pattern

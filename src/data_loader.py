@@ -47,7 +47,9 @@ def extract_text(sample: Dict[str, Any], input_field: str) -> str:
         text = " ".join([str(v) for v in text.values()])
 
     text = str(text)
-    return text.strip().replace("\n", " ")
+    text = text.replace("\r", " ").replace("\t", " ").strip()
+
+    return " ".join(text.split())
 
 
 def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
@@ -67,15 +69,15 @@ def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
 
     summary = sample[summary_field]
 
-    # BookSum has nested dict summaries
     if isinstance(summary, dict):
         # Try common keys
-        for key in ["summary", "summary_text", "abstract"]:
+        for key in ["summary", "summary_text", "abstract", "highlights"]:
             if key in summary:
                 summary = summary[key]
                 break
 
-    return str(summary).strip()
+    summary = str(summary).replace("\r", " ").replace("\t", " ").strip()
+    return " ".join(summary.split())
 
 def load_dataset(dataset_name: str):
     """Loads the dataset from disk by a given name."""
@@ -110,17 +112,17 @@ def chunk_text(text: str, max_tokens: int = 512) -> List[str]:
     return chunks
 
 def prepare_data(dataset, dataset_name: str, input_field: str, summary_field: str, chunk: bool = False, max_tokens: int = 512, save_path: str = None) -> List[dict]:
-        """
-        Prepares text summary pairs from a Hugging face dataset.
+    """
+    Prepares text summary pairs from a Hugging face dataset.
         
-        Args:
-            dataset: HF Dataset object (from load_from_disk())
-            dataset_name: name of dataset for ID prefix
-            input_field: name of document field ('article', 'report', etc.)
-            summary_field: name of summary field ('highlights', 'summary')
-            chunk: whether to chunk long documents by token length
-            max_tokens: max tokens per chunk (used if chunk=True)
-            save_path: optional JSON path to save preprocessed data
+    Args:
+        dataset: HF Dataset object (from load_from_disk())
+        dataset_name: name of dataset for ID prefix
+        input_field: name of document field ('article', 'report', etc.)
+        summary_field: name of summary field ('highlights', 'summary')
+        chunk: whether to chunk long documents by token length
+        max_tokens: max tokens per chunk (used if chunk=True)
+        save_path: optional JSON path to save preprocessed data
 
         Returns:
             List of dicts:
@@ -129,45 +131,47 @@ def prepare_data(dataset, dataset_name: str, input_field: str, summary_field: st
                 "text": "...",
                 "summary": "...",
             }
-        """
-        pairs = []
+      """
+    pairs = []
 
-        for idx, sample in tqdm(enumerate(dataset), total=len(dataset), desc=f"[prepare] {dataset_name}"):
-            text = extract_text(sample, input_field)
-            summary = extract_summary(sample, summary_field)
+    for idx, sample in tqdm(enumerate(dataset), total=len(dataset), desc=f"[prepare] {dataset_name}"):
+        text = extract_text(sample, input_field)
+        summary = extract_summary(sample, summary_field)
 
-            base_id = (
-                sample["id"]
-                if ("id" in sample and isinstance(sample["id"], str))
-                else f"{dataset_name}_{idx}"
-            )
+        raw_id = (
+            sample["id"]
+            if ("id" in sample and isinstance(sample["id"], str))
+            else f"{dataset_name}_{idx}"
+        )
 
-            if chunk:       ## Chunking if document too big.
-                chunks = chunk_text(text, max_tokens = max_tokens)
-                for i, chunked_text in enumerate(chunks):
-                    pairs.append({
-                        'id': f"{base_id}_{i}",
-                        'text': chunked_text,
-                        'summary': summary
-                    })
+        base_id = raw_id.replace("/", "_").replace(" ", "_")
 
-            else:       ## Else making/working in the single chunk.
+        if chunk:       ## Chunking if document too big.
+            chunks = chunk_text(text, max_tokens = max_tokens)
+            for i, chunked_text in enumerate(chunks):
                 pairs.append({
-                    "id": base_id,
-                    "text": text,
-                    "summary": summary
+                    'id': f"{base_id}_{i}",
+                    'text': chunked_text,
+                    'summary': summary
                 })
 
-        print(f"Prepared {len(pairs)} text-summary pairs.")
+        else:       ## Else making/working in the single chunk.
+            pairs.append({
+                "id": base_id,
+                "text": text,
+                "summary": summary
+            })
 
-        if save_path:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            import json
-            with open(save_path, "w", encoding="utf-8") as f:
-                json.dump(pairs, f, indent=2, ensure_ascii=False)
-            print(f"Saved preprocessed data to {save_path}")
+    print(f"Prepared {len(pairs)} text-summary pairs.")
 
-        return pairs
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        import json
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(pairs, f, indent=2, ensure_ascii=False)
+        print(f"Saved preprocessed data to {save_path}")
+
+    return pairs
 
 if __name__ == "__main__":
     ds = load_dataset("cnn_dailymail")

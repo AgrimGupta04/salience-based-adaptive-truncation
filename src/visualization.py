@@ -45,6 +45,8 @@ def load_metrics_csv(csv_path: str)-> pd.DataFrame:
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    df["is_full"] = df["token_budget"].isna()
+
     df["compression_ratio"] = df["avg_tokens_after"] / df["avg_tokens_before"]
     df["token_budget"] = pd.to_numeric(df["token_budget"], errors="coerce")
 
@@ -64,7 +66,7 @@ def plot_quality_vs_compression(df: pd.DataFrame, out_path: str):
         x = "compression_ratio",
         y = "rougeL",
         hue = "dataset",
-        style = "token_budget",
+        style=df["token_budget"].fillna("full"),
         marker = "o"
     )
 

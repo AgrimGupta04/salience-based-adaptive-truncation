@@ -31,26 +31,34 @@ def compute_tfidf_salience(pairs, summary_field = "summary") -> List[float]:
         List of salience scores (float) for each text chunk.
     """
 
-    doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs] 
-
-    unique_docs = list(dict.fromkeys(doc_ids))
-    doc_to_summary = {doc: pairs[doc_ids.index(doc)]["summary"] for doc in unique_docs}
-
-    summaries = [doc_to_summary[doc_ids[i]] for i in range(len(pairs))]
     texts = [p["text"] for p in pairs]
 
-    vectorizer = TfidfVectorizer(ngram_range=(1,2), stop_words='english', max_features = 6000)
+    # extract document ID (everything except last _chunkindex)
+    doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
+
+    # map doc → summary
+    doc_to_summary = {}
+    for p, doc in zip(pairs, doc_ids):
+        if doc not in doc_to_summary:     # same summary repeated across chunks
+            doc_to_summary[doc] = p["summary"]
+
+    summaries = [doc_to_summary[doc] for doc in doc_ids]
+
+    vectorizer = TfidfVectorizer(
+        ngram_range=(1, 2),
+        stop_words="english",
+        max_features=6000
+    )
+
     tfidf_text = vectorizer.fit_transform(texts)
     tfidf_summary = vectorizer.transform(summaries)
-    n = len(texts)      ## To use as an index to separate text and summary vectors
-    salience_scores = []
 
-    for i in range(n):
-        text_vec = tfidf_text[i]
-        summary_vec = tfidf_summary[i]
-        similarity_score = (text_vec @ summary_vec.T).toarray().ravel()[0]
-        salience_scores.append(similarity_score)
-    return minmax_scale(salience_scores)  ## Normalize to [0,1]
+    scores = []
+    for i in range(len(texts)):
+        sim = (tfidf_text[i] @ tfidf_summary[i].T).toarray().ravel()[0]
+        scores.append(sim)
+
+    return minmax_scale(scores)  ## Normalize to [0,1]
 
 def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
     """Chunks semantically cloesest to the summary embedding are more salient.
@@ -61,15 +69,37 @@ def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
     3. Normalize scores to [0,1].
     """
 
-    doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
-    unique_docs = list(dict.fromkeys(doc_ids))
-    doc_to_summary = {doc: pairs[doc_ids.index(doc)]["summary"] for doc in unique_docs}
-    summaries = [doc_to_summary[doc_ids[i]] for i in range(len(pairs))]
     embeddings = np.load(embedding_path)
-    summary_embeddings = model.encode(summaries, convert_to_numpy = True, show_progress_bar = True)
-    denom = (np.linalg.norm(embeddings, axis=1) * np.linalg.norm(summary_embeddings, axis=1)) + 1e-8
-    cosine_scores = np.sum(embeddings * summary_embeddings, axis=1) / denom
 
+    # extract document IDs
+    doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
+
+    # unique doc → summary
+    doc_to_summary = {}
+    for p, doc in zip(pairs, doc_ids):
+        if doc not in doc_to_summary:
+            doc_to_summary[doc] = p["summary"]
+
+    unique_docs = list(doc_to_summary.keys())
+    unique_summaries = [doc_to_summary[d] for d in unique_docs]
+
+    # Encode summary embeddings in batches
+    summary_embs = model.encode(
+        unique_summaries,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        batch_size=32,
+        show_progress_bar=True
+    )
+
+    # Map: doc → summary embedding
+    doc_to_emb = {doc: summary_embs[i] for i, doc in enumerate(unique_docs)}
+
+    # Build aligned array
+    aligned_summary_embs = np.vstack([doc_to_emb[doc] for doc in doc_ids])
+
+    # embeddings from embeddings.npy are normalized
+    cosine_scores = np.sum(embeddings * aligned_summary_embs, axis=1)
 
     return minmax_scale(cosine_scores)  ## Normalize to [0,1]
 
@@ -90,7 +120,7 @@ def save_salience_scores(scores, ids, dataset_name, save_dir = "data/processed/s
     """Saves salience scores to a JSON file."""
 
     os.makedirs(save_dir, exist_ok = True)
-    salience_data = [{"id": id_, "salience_score": score} for id_, score in zip(ids, scores)]
+    salience_data = [{"id": id_, "salience_score": float(score)} for id_, score in zip(ids, scores)]
     save_path = os.path.join(save_dir, f"{dataset_name}_salience_scores.json")
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(salience_data, f, indent=2)
@@ -109,7 +139,7 @@ def main():
             raise FileNotFoundError(f"Missing embedding file: {embed_file}")
         
         cosine_scores = compute_cosine_salience(
-            pairs, model, os.path.join(EMBEDDING_PATH, f"{ds}_embeddings.npy")
+            pairs, model, embed_file
         )
         hybrid = compute_hybrid_salience(tfidf_scores, cosine_scores)
         ids = [p["id"] for p in pairs]

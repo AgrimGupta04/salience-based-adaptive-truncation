@@ -101,7 +101,11 @@ def compute_token_stats(records: List[dict]) -> Dict[str, float]:
     after = [a for a in after if a is not None]
 
     if len(before) == 0 or len(after) == 0:
-        return {}
+        return {
+          "avg_tokens_before": None,
+          "avg_tokens_after": None,
+          "percentage_reduction": None
+        }
     
     return {
         "avg_tokens_before": float(np.mean(before)),

@@ -22,21 +22,22 @@ DATASETS = {
         "revision": "main",
     },
     "xsum": {
-        "hf_name": "EdinburghNLP/xsum",
+        "hf_name": "xsum",
         "subset": None,
         "split": "test",
         "input_field": "document",
         "summary_field": "summary",
-        "ignore_verification": "no_checks",
+        "revision": "main",
+        "verification_mode": "all_checks",
     },
     "govreport": {
         "hf_name": "ccdv/govreport-summarization",
         "subset": None,
         "split": "test",
-        "input_field": "report",
+        "input_field": "document",
         "summary_field": "summary",
         "revision": "main",
-        "ignore_verification": "no_checks",
+        "verification_mode": "no_checks",
     },
     "arxiv": {
         "hf_name": "ccdv/arxiv-summarization",
@@ -45,7 +46,7 @@ DATASETS = {
         "input_field": "article",
         "summary_field": "abstract",
         "revision": "main",
-        "ignore_verification": "no_checks",
+        "verification_mode": "no_checks",
     },
 }
 
