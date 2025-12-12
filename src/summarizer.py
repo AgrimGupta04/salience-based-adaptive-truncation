@@ -127,7 +127,7 @@ def generate_summaries(text: str, model_pipe, max_length: int = 150, min_length:
 
     return out[0]["summary_text"].strip()       ## Returning the summary string removing any leading or trailing whitespaces
 
-def summarize_batch(texts: List[str], model_pipe, batch_size: int = 32, **gen_kwargs) -> List[str]:
+def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kwargs) -> List[str]:
     """Summarizes a list of texts (chunks or documents) in batches.
 
     Args:
@@ -155,7 +155,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 32, **gen_kw
             summaries.append(o["summary_text"].strip())
     return summaries
 
-def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 32, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
+def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
     """Summarize records in a truncated JSON file and save the outputs.
     Summarize the 'truncated_text' field in the JSON file containing truncated documents.
     Main approach for the paper (versus full-document summarization as baseline).
@@ -218,7 +218,7 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
     print(f"Saved {len(results)} summaries to {out_path}")
     return results
     
-def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 32, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
+def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
     """Summarize the 'text' field frim a pairs JSON file (full-context-baseline).
     Run the summarizer on full documents -> baseline, for comaprision with the 
     summary generated from the truncated text(summarize_truncated_files) which is the main approach.
