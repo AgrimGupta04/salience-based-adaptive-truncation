@@ -21,6 +21,10 @@ warnings.filterwarnings(
     "ignore",
     message="Your max_length is set to .*, but your input_length is only"
 )
+warnings.filterwarnings(
+    "ignore", 
+    message="The following generation flags are not valid and may be ignored:.*"
+)
 
 DEFAULT_MODEL = "facebook/bart-large-cnn"
 SUMMARIES_DIR = "data/processed/summaries/"
@@ -143,7 +147,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
     for i in tqdm(range(0, len(texts), batch_size), desc = "Summarizing batches"):      ## Stepped range for batching
         batch = texts[i: i + batch_size]
         try:
-            outs = model_pipe(batch, truncation=True, **gen_kwargs)
+            outs = model_pipe(batch, truncation=True, **gen_kwargs, batch_size = batch_size)
 
         except RuntimeError as e:
             # OOM recovery
