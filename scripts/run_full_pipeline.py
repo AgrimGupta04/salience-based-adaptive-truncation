@@ -188,7 +188,7 @@ def run_summarization(dataset_name: str, cfg: dict):
         print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
 
     # Choose summarizer for truncated inputs
-    truncated_file = f"data/processed/truncated_texts/{dataset_name}_{cfg['budget']}_truncated_summaries.json"
+    truncated_file = f"data/processed/truncated_texts/{dataset_name}_token_budget_{cfg['budget']}_truncated_summaries.json"
     if not os.path.exists(truncated_file):
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
 
@@ -207,7 +207,7 @@ def run_evaluation(dataset_name: str, cfg: dict):
 
     # expected summary filenames created by summarizer functions
     full_summary_file = f"data/processed/summaries/{os.path.basename(f'{dataset_name}_pairs')}_full_summaries.json"
-    trunc_summary_file = f"data/processed/summaries/{dataset_name}_{cfg['budget']}_truncated_summaries.json"
+    trunc_summary_file = f"data/processed/summaries/{dataset_name}_token_budget_{cfg['budget']}_truncated_summaries.json"
 
     # Prior code used slightly different filenames; handle possible variants
     # Try standard names first, fall back to alternative pattern
