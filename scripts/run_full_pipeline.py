@@ -183,7 +183,7 @@ def run_summarization(dataset_name: str, cfg: dict):
 
     pairs_file = f"data/processed/{dataset_name}_pairs.json"
     if os.path.exists(pairs_file):
-        summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, batch_size=16)
+        summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, batch_size=32)
     else:
         print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
 
@@ -196,7 +196,7 @@ def run_summarization(dataset_name: str, cfg: dict):
     print(f"[summarize] chosen model for truncated: {chosen_model}")
     trunc_pipe = load_summarization_model(chosen_model)
 
-    summarize_truncated_files(truncated_file, model_pipe=trunc_pipe, batch_size=16)
+    summarize_truncated_files(truncated_file, model_pipe=trunc_pipe, batch_size=32)
     print(f"[summarize] summaries produced for {dataset_name}")
 
 # ------------------------------
