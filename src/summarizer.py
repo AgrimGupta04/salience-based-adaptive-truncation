@@ -87,7 +87,7 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code = True)
 
-    if "long-t5" in model_name.lower() or "led-" in model_name.lower():
+    if "led-" in model_name.lower() or "long-t5" in model_name.lower():
         try:
             model = _load_model_with_offload(model_name, torch_dtype=torch_dtype)
             print(f"✅ Loaded {model_name} with device_map='auto' and offload.")
@@ -103,6 +103,10 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
             trust_remote_code=True,
             low_cpu_mem_usage=True
         )
+
+        if device_idx != -1:
+            model.to(torch.device(device_idx))
+        print(f"✅ Loaded {model_name} directly.")
 
     pipe = pipeline("summarization", model = model, tokenizer = tokenizer, device = device_idx)
     return pipe
@@ -275,7 +279,7 @@ if __name__ == "__main__":
     parser.add_argument("--truncated", type = str, help = "Path to truncated JSON to summarize")
     parser.add_argument("--pairs", type=str, help="Path to full pairs JSON to summarize (baseline)")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=16)
     args = parser.parse_args()
 
     pipe = load_summarization_model(args.model)
