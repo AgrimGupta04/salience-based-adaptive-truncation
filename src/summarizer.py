@@ -91,28 +91,38 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
     
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code = True)
 
-    if "led-" in model_name.lower() or "long-t5" in model_name.lower():
+    use_offload = "led-" in model_name.lower() or "long-t5" in model_name.lower()
+
+    if use_offload:
+        ## Complex models (must use offload for Colab/Kaggle)
         try:
             model = _load_model_with_offload(model_name, torch_dtype=torch_dtype)
             print(f"✅ Loaded {model_name} with device_map='auto' and offload.")
         except Exception as e:
-            # bubble up a clear error so caller can choose an alternative
-            raise RuntimeError(f"Failed to load long model with offload: {e}")
-
+            raise RuntimeError(f"Failed to load long model: {e}. Please use a smaller model.")
+    
     else:
-        # Normal model load (BART, PEGASUS, etc.)
+        ## Standard models (BART/PEGASUS - Load directly to GPU)
+        print(f"🚀 Loading standard model {model_name} directly to device {device_idx}...")
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
             torch_dtype=torch_dtype,
             trust_remote_code=True,
             low_cpu_mem_usage=True
         )
-
+        ## Manually move to CUDA device 0 (CRUCIAL for speed)
         if device_idx != -1:
             model.to(torch.device(device_idx))
         print(f"✅ Loaded {model_name} directly.")
 
-    pipe = pipeline("summarization", model = model, tokenizer = tokenizer, device = device_idx)
+    # 3. Create pipeline (FIXED LOGIC)
+    if use_offload:
+        ## FIX: Do not pass device_idx to pipeline if device_map="auto" was used
+        pipe = pipeline("summarization", model=model, tokenizer=tokenizer)
+    else:
+        ## Standard load: pass device_idx
+        pipe = pipeline("summarization", model=model, tokenizer=tokenizer, device=device_idx)
+        
     return pipe
 
 def generate_summaries(text: str, model_pipe, max_length: int = 150, min_length: int = 50, do_sample: bool = False) -> str:
