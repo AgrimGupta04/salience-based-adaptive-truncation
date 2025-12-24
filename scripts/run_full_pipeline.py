@@ -15,7 +15,7 @@ import json
 import numpy as np
 from typing import Dict
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data_loader import prepare_data, load_dataset
 from src.embedding import load_embedding_model, build_embedding_index
@@ -40,7 +40,9 @@ from src.visualization import (
     plot_rouge_drop,
     plot_salience_heatmap,
     plot_model_selection_histogram,
-    plot_bootstrap_ci
+    plot_bootstrap_ci,
+    plot_cost_vs_budget,
+    plot_cost_vs_quality
 )
 
 # ------------------------------
@@ -82,6 +84,7 @@ def load_dataset_config() -> Dict[str, dict]:
 def run_prepare_data(dataset_name: str, cfg: dict) -> str:
     print(f"\n[prepare] {dataset_name} — loading raw dataset and preparing pairs")
     ds = load_dataset(dataset_name)
+
     pairs = prepare_data(
         ds,
         dataset_name=dataset_name,
@@ -108,7 +111,7 @@ def run_build_embeddings(pairs_file: str, dataset_name: str):
 # ------------------------------
 # 4. Salience scoring
 # ------------------------------
-def run_salience_scoring(dataset_name: str):
+def run_salience_scoring(dataset_name: str, salience_type: str):
     print(f"\n[salience] computing salience scores for {dataset_name}")
     pairs_path = f"data/processed/{dataset_name}_pairs.json"
     if not os.path.exists(pairs_path):
@@ -118,12 +121,19 @@ def run_salience_scoring(dataset_name: str):
     emb_path = f"data/processed/embeddings/{dataset_name}_embeddings.npy"
     emb_model = load_embedding_model()
 
-    tfidf_scores = compute_tfidf_salience(pairs)
-    cosine_scores = compute_cosine_salience(pairs, emb_model, emb_path)
-    hybrid_scores = compute_hybrid_salience(tfidf_scores, cosine_scores)
+    if salience_type == "tfidf":
+        scores = compute_tfidf_salience(pairs)
+    elif salience_type == "cosine":
+        scores = compute_cosine_salience(pairs, emb_model, emb_path)
+    elif salience_type == "hybrid":
+        tfidf = compute_tfidf_salience(pairs)
+        cosine = compute_cosine_salience(pairs, emb_model, emb_path)
+        scores = compute_hybrid_salience(tfidf, cosine)
+    else:
+        raise ValueError(f"Unknown salience_type: {salience_type}")
 
     ids = [p["id"] for p in pairs]
-    save_salience_scores(hybrid_scores, ids, dataset_name)
+    save_salience_scores(scores, ids, dataset_name, salience_type)
     print(f"[salience] saved salience scores for {dataset_name}")
 
 # ------------------------------
@@ -161,16 +171,16 @@ def choose_summarization_model_from_truncated(truncated_json_path: str) -> str:
 # ------------------------------
 # 5. Truncate dataset
 # ------------------------------
-def run_truncation(dataset_name: str, token_budget: int):
+def run_truncation(dataset_name: str, token_budget: int, salience_type: str):
     print(f"\n[truncate] {dataset_name} -> token_budget={token_budget}")
-    stats = truncate_dataset(dataset_name=dataset_name, token_budget=token_budget)
+    stats = truncate_dataset(dataset_name=dataset_name, token_budget=token_budget, salience_type=salience_type)
     print(f"[truncate] done: avg_tokens_before={stats.get('avg_tokens_before'):.1f} avg_tokens_after={stats.get('avg_tokens_after'):.1f}")
     return stats
 
 # ------------------------------
 # 6. Summarization
 # ------------------------------
-def run_summarization(dataset_name: str, cfg: dict):
+def run_summarization(dataset_name: str, cfg: dict, salience_type: str):
     """
     Summarize full pairs (baseline) using cfg['model'], then choose model
     for truncated inputs and summarize them.
@@ -188,7 +198,7 @@ def run_summarization(dataset_name: str, cfg: dict):
         print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
 
     # Choose summarizer for truncated inputs
-    truncated_file = f"data/processed/truncated_texts/{dataset_name}_token_budget_{cfg['budget']}_truncated_summaries.json"
+    truncated_file = f"data/processed/truncated_texts/{dataset_name}_{salience_type}_salience_token_budget_{cfg['budget']}_truncated_summaries.json"
     if not os.path.exists(truncated_file):
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
 
@@ -202,12 +212,12 @@ def run_summarization(dataset_name: str, cfg: dict):
 # ------------------------------
 # 7. Evaluation
 # ------------------------------
-def run_evaluation(dataset_name: str, cfg: dict):
+def run_evaluation(dataset_name: str, cfg: dict, salience_type: str):
     print(f"\n[evaluate] computing metrics for {dataset_name}")
 
     # expected summary filenames created by summarizer functions
     full_summary_file = f"data/processed/summaries/{os.path.basename(f'{dataset_name}_pairs')}_full_summaries.json"
-    trunc_summary_file = f"data/processed/summaries/{dataset_name}_token_budget_{cfg['budget']}_truncated_summaries.json"
+    trunc_summary_file = f"data/processed/summaries/{dataset_name}_{salience_type}_salience_token_budget_{cfg['budget']}_truncated_summaries.json"
 
     # Prior code used slightly different filenames; handle possible variants
     # Try standard names first, fall back to alternative pattern
@@ -245,12 +255,14 @@ def run_visualization(metrics_csv: str = "results/metrics.csv"):
     plot_token_distribution(df, out_path="results/plots/token_distribution.png")
     plot_model_selection_histogram()
     plot_rouge_drop(df, out_path="results/plots/rouge_drop.png")
+    plot_cost_vs_budget(df, out_path="results/plots/cost_vs_budget.png")
+    plot_cost_vs_quality(df, metric="rouge1", out_path="results/plots/cost_vs_quality.png")
 
     ## Per-dataset bootstrap CI plots
     for dataset_name in df["dataset"].unique():
         try:
             plot_bootstrap_ci(dataset_name)
-            plot_salience_heatmap(dataset_name)
+            # plot_salience_heatmap(dataset_name)
         except Exception as e:
             print(f"[visualize] Failed to generate CI plot for {dataset_name}: {e}")
 
@@ -261,11 +273,12 @@ def run_visualization(metrics_csv: str = "results/metrics.csv"):
 # ------------------------------
 def main():
     configs = load_dataset_config()
+    salience_types = ["tfidf", "cosine", "hybrid"] # Choose salience types here
     os.makedirs("results", exist_ok=True)
 
-    for dataset_name, cfg in configs.items():
+    for dataset_name, cfg in configs.items():    
         print("\n" + "=" * 80)
-        print(f"RUNNING PIPELINE FOR: {dataset_name}")
+        print(f"RUNNING PIPELINE FOR: {dataset_name} with salience type: {salience_type}")
         print("=" * 80)
 
         try:
@@ -274,18 +287,19 @@ def main():
 
             # 2. Embeddings
             run_build_embeddings(f"data/processed/{dataset_name}_pairs.json", dataset_name)
+    
+            for salience_type in salience_types:
+                # 3. Salience scoring
+                run_salience_scoring(dataset_name, salience_type)
 
-            # 3. Salience scoring
-            run_salience_scoring(dataset_name)
+                # 4. Truncation (token_budget)
+                run_truncation(dataset_name, cfg["budget"], salience_type)
 
-            # 4. Truncation (token_budget)
-            run_truncation(dataset_name, cfg["budget"])
+                # 5. Summarization (baseline + truncated with auto model)
+                run_summarization(dataset_name, cfg, salience_type)
 
-            # 5. Summarization (baseline + truncated with auto model)
-            run_summarization(dataset_name, cfg)
-
-            # 6. Evaluation (appends to results/metrics.csv)
-            run_evaluation(dataset_name, cfg)
+                # 6. Evaluation (appends to results/metrics.csv)
+                run_evaluation(dataset_name, cfg, salience_type)
 
             print(f"[main] completed dataset: {dataset_name}")
 

@@ -1,7 +1,7 @@
 import os 
 import json 
 from typing import List, Dict
-
+import torch
 import numpy as np
 import csv
 from rouge_score import rouge_scorer
@@ -66,7 +66,20 @@ def compute_rouge(references: List[str], predictions: List[str]):
     }
 
 
-def compute_bertscore(references: List[str], predictions: List[str]):
+def load_full_context_scores(full_summary_path: str) -> Dict[str, List[float]]:
+    """
+    Loads full-context summaries and computes per-document ROUGE lists
+    for significance testing.
+    """
+    loaded = load_summary_file(full_summary_path)
+    rouge = compute_rouge(
+        loaded["references"],
+        loaded["predictions"]
+    )
+    return rouge
+
+
+def compute_bertscore(references: List[str], predictions: List[str], device = None):
     """Rouge is lexical -> counts word overlaps.
     BERTScore is semantic -> looks for meaning similarity using pre-trained language models.
     
@@ -77,7 +90,10 @@ def compute_bertscore(references: List[str], predictions: List[str]):
     Returns: Average BERTScore F1.
     """
 
-    P, R, F1 = bert_score(predictions, references, lang = "en")
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    P, R, F1 = bert_score(predictions, references, lang = "en", device="cuda" if torch.cuda.is_available() else "cpu")
 
     return {
         "bert_score_f1": float(F1.mean()),
@@ -113,8 +129,9 @@ def compute_token_stats(records: List[dict]) -> Dict[str, float]:
         "percentage_reduction": 100 * (1 - np.mean(after) / np.mean(before))
     }
 
-def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True) -> Dict[str, float]:
-    """High-level evaluation for a single summary JSON file.
+def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, full_context_scores: Dict[str, List[float]] = None) -> Dict[str, float]:
+    """
+    High-level evaluation for a single summary JSON file.
     Computes ROUGE, BERTScore, and token compression stats.
     
     Args:
@@ -123,69 +140,42 @@ def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True) ->
     Returns: Dict with all evaluation metrics.
     """
 
-    base = os.path.basename(summary_json_path)
-    dataset_name = base.split("_")[0]
-
-    token_budget = None
-    if "token_budget" in base:
-        try:
-            token_budget = int(base.split("token_budget_")[1].split("_")[0])
-        except:  # noqa: E722
-            token_budget = None  
-    else:
-        token_budget = 100
+    dataset, salience_type, token_budget = parse_metadata_from_filename(summary_json_path)
 
     loaded = load_summary_file(summary_json_path)
 
-    refs = loaded["references"]
-    preds = loaded["predictions"]
-    records = loaded["records"]
+    rouge_scores = compute_rouge(
+        loaded["references"], loaded["predictions"]
+    )
 
-    rouge_scores = compute_rouge(refs, preds)
-    bert_scores = compute_bertscore(refs, preds) if use_bertscore else {}
-    token_stats = compute_token_stats(records)
+    bert_scores = compute_bertscore(
+        loaded["references"], loaded["predictions"]
+    ) if use_bertscore else {}
 
-    result = {
+    token_stats = compute_token_stats(loaded["records"])
+
+    if full_context_scores is not None:
+        assert len(full_context_scores["rouge1_list"]) == len(rouge_scores["rouge1_list"]), \
+            "Mismatch between full-context and truncated summaries"
+
+    ## significance testing
+    sig_results = {}
+    if full_context_scores is not None:
+        sig_results = significance_test_bootstrap(
+            full_context_scores["rouge1_list"],
+            rouge_scores["rouge1_list"],
+        )
+
+    return {
         "file": summary_json_path,
-        "dataset": dataset_name,
-        "budget": token_budget,
-        **rouge_scores,
+        "dataset": dataset,
+        "salience_type": salience_type,       
+        "token_budget": token_budget,          
+        **{k: rouge_scores[k] for k in ["rouge1", "rouge2", "rougeL"]},
         **bert_scores,
-        **token_stats
+        **token_stats,
+        **sig_results,         
     }
-
-    return result
-
-def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"):
-    """Appends a singel evalution dict to the metrics CSV file.
-    CSV conatianing al evaluation results.
-    """
-
-    os.makedirs("results", exist_ok = True)
-
-    # Define consistent column order
-    FIELD_ORDER = [
-        "file",
-        "dataset",
-        "token_budget",
-        "rouge1", "rouge2", "rougeL",
-        "bert_score_f1",
-        "avg_tokens_before", "avg_tokens_after",
-        "percentage_reduction"
-    ]
-
-    # Ensure only valid keys included
-    row = {k: results.get(k) for k in FIELD_ORDER}
-
-    file_exists = os.path.exists(out_path)
-
-    with open(out_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames = FIELD_ORDER)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(row)
-
-    print(f"Saved metrics to {out_path}")
 
 def significance_test_bootstrap(full_scores, trunc_scores, n_samples=1000, seed=42):
     """
@@ -235,3 +225,62 @@ def significance_test_bootstrap(full_scores, trunc_scores, n_samples=1000, seed=
         "ci_high": ci_high,
         "p_value": p_value
     }
+
+
+def parse_metadata_from_filename(filename: str):
+    """
+    Robust parsing of dataset, salience_type, token_budget from filename.
+    """
+
+    base = os.path.basename(filename)
+
+    dataset = base.split("_salience_")[0]
+
+    salience_type = None
+    if "_salience_" in base:
+        salience_type = base.split("_salience_")[1].split("_")[0]
+
+    token_budget = None
+    if "token_budget_" in base:
+        try:
+            token_budget = int(base.split("token_budget_")[1].split("_")[0])
+        except Exception:
+            token_budget = None
+
+    return dataset, salience_type, token_budget
+
+def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"):
+    """Appends a singel evalution dict to the metrics CSV file.
+    CSV conatianing al evaluation results.
+    """
+
+    os.makedirs("results", exist_ok = True)
+
+    # Define consistent column order
+    FIELD_ORDER = [
+        "file",
+        "dataset",
+        "salience_type",
+        "token_budget",
+        "rouge1", "rouge2", "rougeL",
+        "bert_score_f1",
+        "avg_tokens_before", "avg_tokens_after",
+        "percentage_reduction",
+        "mean_diff",
+        "ci_low",
+        "ci_high",
+        "p_value",
+    ]
+
+    # Ensure only valid keys included
+    row = {k: results.get(k) for k in FIELD_ORDER}
+
+    file_exists = os.path.exists(out_path)
+
+    with open(out_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames = FIELD_ORDER)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+    print(f"Saved metrics to {out_path}")

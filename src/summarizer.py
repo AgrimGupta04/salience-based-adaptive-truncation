@@ -1,9 +1,9 @@
 import os 
 import torch 
 from transformers import(
-  AutoTokenizer,
-  AutoModelForSeq2SeqLM,
-  pipeline
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+    pipeline
 )
 import json 
 from typing import List, Dict, Optional, Any
@@ -11,41 +11,30 @@ from tqdm import tqdm
 
 import warnings
 import tiktoken
+import huggingface_hub
 
-## Suppress the redundant max_new_tokens/max_length warnings that were flooding the output
-warnings.filterwarnings(
-    "ignore", 
-    message="Both `max_new_tokens` \\(=.*\\) and `max_length` \\(=.*\\) seem to have been set"
-)
-warnings.filterwarnings(
-    "ignore",
-    message="Your max_length is set to .*, but your input_length is only"
-)
-warnings.filterwarnings(
-    "ignore", 
-    message="The following generation flags are not valid and may be ignored:.*"
-)
+## Suppress warnings
+warnings.filterwarnings("ignore", message="Both `max_new_tokens` \\(=.*\\) and `max_length` \\(=.*\\) seem to have been set")
+warnings.filterwarnings("ignore", message="Your max_length is set to .*, but your input_length is only")
+warnings.filterwarnings("ignore", message="The following generation flags are not valid and may be ignored:.*")
 
 DEFAULT_MODEL = "facebook/bart-large-cnn"
 SUMMARIES_DIR = "data/processed/summaries/"
 PAIRS_DIR = "data/processed/"
+
+# CHECKPOINT SETTING: Save progress every 20 documents
+CHECKPOINT_INTERVAL = 20 
 
 enc = tiktoken.get_encoding("cl100k_base")
 
 OFFLOAD_DIR = "/content/offload"
 os.makedirs(OFFLOAD_DIR, exist_ok=True)
 
-def get_device():
-    return 0 if torch.cuda.is_available() else -1
-
 def estimate_tokens(text: str) -> int:
     return len(enc.encode(text))
 
 def _load_model_with_offload(model_name: str, torch_dtype):
-    """
-    Attempt to load model with device_map='auto' and offloading (for Long-T5).
-    This helps avoid OOMs for very large long-input models on Colab.
-    """
+    print(f"🔄 Attempting complex load with offload for {model_name}...")
     try:
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
@@ -57,29 +46,18 @@ def _load_model_with_offload(model_name: str, torch_dtype):
             trust_remote_code=True,
         )
         return model
-
     except Exception as e:
-        ## If the above fails, re-raise so caller can fallback to a lighter model
         raise RuntimeError(f"Offload load failed for {model_name}: {e}")
 
 def load_summarization_model(model_name: Optional[str] = None, device: Optional[int] = None, max_input_tokens: int = 2048):
-    """Load tokenizer + model and returns a transformer pipeline for summarization.
-    
-    Args:
-        model_name: HF model id (We have default set to BART large CNN)
-        device: None -> GPU if available else CPU, int -> specific GPU id, -1 -> CPU
-        
-    Returns: Pipeline object callable like pipeline(texts)
-    """
-
+    """Load tokenizer + model and returns a transformer pipeline for summarization."""
     if model_name is None:
         if max_input_tokens < 1024:
-            model_name = "sshleifer/distilbart-cnn-12-6"
+            model_name = "facebook/bart-large-cnn"
         elif max_input_tokens < 8000:
             model_name = "google/pegasus-large"
         else:
-            model_name = "google/long-t5-tglobal-base"
-        
+            model_name = "allenai/led-base-16384"
         print(f"🔄 Auto-selected model: {model_name}")
 
     if device is None:
@@ -88,21 +66,17 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
         device_idx = device
 
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code = True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     use_offload = "led-" in model_name.lower() or "long-t5" in model_name.lower()
 
     if use_offload:
-        ## Complex models (must use offload for Colab/Kaggle)
         try:
             model = _load_model_with_offload(model_name, torch_dtype=torch_dtype)
             print(f"✅ Loaded {model_name} with device_map='auto' and offload.")
         except Exception as e:
             raise RuntimeError(f"Failed to load long model: {e}. Please use a smaller model.")
-    
     else:
-        ## Standard models (BART/PEGASUS - Load directly to GPU)
         print(f"🚀 Loading standard model {model_name} directly to device {device_idx}...")
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
@@ -110,185 +84,174 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
             trust_remote_code=True,
             low_cpu_mem_usage=True
         )
-        ## Manually move to CUDA device 0 (CRUCIAL for speed)
         if device_idx != -1:
             model.to(torch.device(device_idx))
         print(f"✅ Loaded {model_name} directly.")
 
-    # 3. Create pipeline (FIXED LOGIC)
+    # FIX: Do not pass device argument if using accelerate/offload
     if use_offload:
-        ## FIX: Do not pass device_idx to pipeline if device_map="auto" was used
         pipe = pipeline("summarization", model=model, tokenizer=tokenizer)
     else:
-        ## Standard load: pass device_idx
         pipe = pipeline("summarization", model=model, tokenizer=tokenizer, device=device_idx)
-        
     return pipe
 
-def generate_summaries(text: str, model_pipe, max_length: int = 150, min_length: int = 50, do_sample: bool = False) -> str:
-    """Summarize a single text using the provided pipeline (model + tokenizer).
-    
-    Returns: The summary text.
-    """
-
-    out = model_pipe(       ## This pipeline accepts a single string or list ensuring string input
-        text, 
-        max_length = max_length,
-        min_length = min_length,
-        do_sample = do_sample,
-        truncation = True
-    )
-
-    return out[0]["summary_text"].strip()       ## Returning the summary string removing any leading or trailing whitespaces
-
 def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kwargs) -> List[str]:
-    """Summarizes a list of texts (chunks or documents) in batches.
-
-    Args:
-        texts: List of input texts to summarize.
-        model_pipe: The summarization pipeline (from load_summarization_model).
-        batch_size: Number of texts to summarize in a single batch.
-        gen_kwargs: Additional generation arguments for the pipeline.
-        
-    Returns: List of summary strings
-    """
-
+    """Summarizes a list of texts (chunks or documents) in batches."""
     summaries = []
-    for i in tqdm(range(0, len(texts), batch_size), desc = "Summarizing batches"):      ## Stepped range for batching
+    # Disable internal TQDM when running inside the checkpoint loop to avoid clutter
+    iterator = range(0, len(texts), batch_size)
+    
+    for i in iterator:
         batch = texts[i: i + batch_size]
         try:
-            outs = model_pipe(batch, truncation=True, **gen_kwargs, batch_size = batch_size)
-
+            outs = model_pipe(batch, truncation=True, batch_size=batch_size, **gen_kwargs) 
         except RuntimeError as e:
-            # OOM recovery
             print("GPU OOM — retrying with batch_size=1")
             torch.cuda.empty_cache()
-            outs = [model_pipe(t, truncation=True, **gen_kwargs)[0] for t in batch]       ## outs is a list of dicts when input list -> flatten accordingly
-        
+            outs = [model_pipe(t, truncation=True, **gen_kwargs)[0] for t in batch]
         for o in outs:
             summaries.append(o["summary_text"].strip())
     return summaries
 
 def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
-    """Summarize records in a truncated JSON file and save the outputs.
-    Summarize the 'truncated_text' field in the JSON file containing truncated documents.
-    Main approach for the paper (versus full-document summarization as baseline).
-
-    Args:
-        truncated_json_path: Path to the JSON file with truncated texts from truncartion.py.
-        out_name: Optional name for the output summary file. If None, uses the input file name with '_summaries' suffix.
-        model_pipe: HF model id for summarization. If None, uses DEFAULT_MODEL.
-        batch_size: Number of texts to summarize in a single batch.
-        gen_kwargs: Additional generation arguments for the pipeline.
-        
-
-        Truncated JSON file format:
-        {
-        "id": "123",
-        "truncated_text": "top salient chunks concatenated",
-        "summary": "reference summary",
-        "tokens_before": 780,
-        "tokens_after": 240,
-        "kept_chunk_count": 3
-        }
-
-    Returns: List of records with generated summaries
-    """
-
+    """Summarize records with Checkpointing support."""
     if gen_kwargs is None:
-        gen_kwargs = {"max_length": 64, "min_length": 16, "num_beams": 1, "do_sample": False}
+        # **FIXED PARAMETERS:** Lower min_length and higher num_beams for robustness
+        gen_kwargs = {"max_length": 128, "min_length": 10, "num_beams": 1, "do_sample": False} 
 
-    with open(truncated_json_path, "r", encoding = "utf-8") as f:
-        records = json.load(f)
-
-    texts = [r["truncated_text"] for r in records]      ## Extracting texts to summarize
-
-    if model_pipe is None:
-        max_tok = max(estimate_tokens(t) for t in texts)
-        model_pipe = load_summarization_model(max_input_tokens=max_tok)
-
-    generated_summaries = summarize_batch(texts, model_pipe, batch_size, **gen_kwargs)      ## Summarizing in batches using the HF model pipeline
-    
-    results = []
-    for rec, gen in zip(records, generated_summaries):
-        results.append({
-            "id": rec["id"],
-            "truncated_text": rec["truncated_text"],
-            "references": rec.get("summary", ""),
-            "generated_summary": gen,
-            "tokens_before": rec.get("tokens_before"),
-            "tokens_after": rec.get("tokens_after")
-        })
-
-    os.makedirs(SUMMARIES_DIR, exist_ok = True)
+    os.makedirs(SUMMARIES_DIR, exist_ok=True)
     if out_name is None:
         base = os.path.basename(truncated_json_path).replace(".json", "")
         out_name = f"{base}"
-
     out_path = os.path.join(SUMMARIES_DIR, f"{out_name}.json")
-    # Save summaries to file
-    with open(out_path, "w", encoding = "utf-8") as f:
-        json.dump(results, f, indent = 2)
-    print(f"Saved {len(results)} summaries to {out_path}")
+
+    # 1. Load Input Data
+    with open(truncated_json_path, "r", encoding="utf-8") as f:
+        records = json.load(f)
+
+    # 2. Check for Existing Progress (Checkpointing)
+    results = []
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming...")
+        except json.JSONDecodeError:
+            print("[checkpoint] Existing file was corrupt. Starting from scratch.")
+            results = []
+
+    # 3. Determine remaining work
+    start_index = len(results)
+    if start_index >= len(records):
+        print(f"[checkpoint] All {len(records)} records already processed. Skipping.")
+        return results
+
+    records_to_process = records[start_index:]
+    
+    if model_pipe is None:
+        # Just use a heuristic for loading model if not provided
+        texts_sample = [r["truncated_text"] for r in records_to_process[:50]]
+        max_tok = max(estimate_tokens(t) for t in texts_sample) if texts_sample else 2048
+        model_pipe = load_summarization_model(max_input_tokens=max_tok)
+
+    print(f"[summarize] Starting processing from index {start_index} to {len(records)}...")
+
+    # 4. Process in Chunks (Checkpoint Intervals)
+    pbar = tqdm(total=len(records_to_process), desc="Summarizing with Checkpoints")
+    
+    for i in range(0, len(records_to_process), CHECKPOINT_INTERVAL):
+        chunk_recs = records_to_process[i : i + CHECKPOINT_INTERVAL]
+        chunk_texts = [r["truncated_text"] for r in chunk_recs]
+
+        # Summarize this chunk
+        chunk_summaries = summarize_batch(chunk_texts, model_pipe, batch_size, **gen_kwargs)
+
+        # Append results
+        for rec, gen in zip(chunk_recs, chunk_summaries):
+            results.append({
+                "id": rec["id"],
+                "truncated_text": rec["truncated_text"],
+                "references": rec.get("summary", ""),
+                "generated_summary": gen,
+                "tokens_before": rec.get("tokens_before"),
+                "tokens_after": rec.get("tokens_after"),
+                "model_name": model_pipe.model.config._name_or_path
+            })
+        
+        # SAVE CHECKPOINT TO DISK
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        
+        pbar.update(len(chunk_recs))
+
+    pbar.close()
+    print(f"Saved complete results ({len(results)} summaries) to {out_path}")
     return results
     
 def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
-    """Summarize the 'text' field frim a pairs JSON file (full-context-baseline).
-    Run the summarizer on full documents -> baseline, for comaprision with the 
-    summary generated from the truncated text(summarize_truncated_files) which is the main approach.
-    
-    Args:
-        pairs_file: Path to the JSON file with text-summary pairs from data_loader.prepare_data().
-        out_name: Optional name for the output summary file. If None, uses the input file name with '_full_summaries' suffix.
-        model_pipe: HF model id for summarization. If None, uses DEFAULT_MODEL.
-        batch_size: Number of texts to summarize in a single batch.
-        gen_kwargs: Additional generation arguments for the pipeline.
-
-        Pairs JSON file format:     Untouched full article we downloaded from dataset
-        {
-        "id": "123",
-        "text": "Full document text",
-        "summary": "reference highlights"
-        }
-
-    Returns: List of records with generated summaries
-    """
-
+    """Summarize full pairs with Checkpointing support."""
     if gen_kwargs is None:
-        gen_kwargs = {"max_length": 256, "min_length": 50, "num_beams": 1, "do_sample": False}
+        gen_kwargs = {"max_length": 128, "min_length": 50, "num_beams": 1, "do_sample": False}
 
-    if model_pipe is None:
-        model_pipe = load_summarization_model()
-
-    with open(pairs_file, "r", encoding="utf-8") as f:
-        pairs = json.load(f)
-    
-    texts = [p["text"] for p in pairs]      ## Extracting full texts to summarize
-    generated_summaries = summarize_batch(texts, model_pipe, batch_size, **gen_kwargs)
-
-    results = []
-    for p, gen in zip(pairs, generated_summaries):
-        results.append({
-            "id": p["id"],
-            "text": p["text"],
-            "references": p.get("summary", ""),
-            "generated_summary": gen
-        })
-
-    os.makedirs(SUMMARIES_DIR, exist_ok = True)
+    os.makedirs(SUMMARIES_DIR, exist_ok=True)
     if out_name is None:
         base = os.path.basename(pairs_file).replace(".json", "")
         out_name = f"{base}_full_summaries"
     out_path = os.path.join(SUMMARIES_DIR, f"{out_name}.json")
-    with open(out_path, "w", encoding = "utf-8") as f:
-        json.dump(results, f, indent = 2)
 
-    print(f"Saved {len(results)} full-context summaries to {out_path}")
+    # 1. Load Data
+    with open(pairs_file, "r", encoding="utf-8") as f:
+        pairs = json.load(f)
+
+    # 2. Check Checkpoint
+    results = []
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming...")
+        except json.JSONDecodeError:
+            results = []
+
+    start_index = len(results)
+    if start_index >= len(pairs):
+        print(f"[checkpoint] All {len(pairs)} records already processed. Skipping.")
+        return results
+
+    pairs_to_process = pairs[start_index:]
+
+    if model_pipe is None:
+        model_pipe = load_summarization_model()
+
+    print(f"[summarize] Starting processing from index {start_index} to {len(pairs)}...")
+
+    pbar = tqdm(total=len(pairs_to_process), desc="Summarizing Baseline with Checkpoints")
+
+    for i in range(0, len(pairs_to_process), CHECKPOINT_INTERVAL):
+        chunk_pairs = pairs_to_process[i : i + CHECKPOINT_INTERVAL]
+        chunk_texts = [p["text"] for p in chunk_pairs]
+
+        chunk_summaries = summarize_batch(chunk_texts, model_pipe, batch_size, **gen_kwargs)
+
+        for p, gen in zip(chunk_pairs, chunk_summaries):
+            results.append({
+                "id": p["id"],
+                "text": p["text"],
+                "references": p.get("summary", ""),
+                "generated_summary": gen
+            })
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        
+        pbar.update(len(chunk_pairs))
+
+    pbar.close()
+    print(f"Saved complete results ({len(results)} full-context summaries) to {out_path}")
     return results
 
 if __name__ == "__main__":
     import argparse
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--truncated", type = str, help = "Path to truncated JSON to summarize")
     parser.add_argument("--pairs", type=str, help="Path to full pairs JSON to summarize (baseline)")

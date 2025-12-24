@@ -138,11 +138,7 @@ def prepare_data(dataset, dataset_name: str, input_field: str, summary_field: st
         text = extract_text(sample, input_field)
         summary = extract_summary(sample, summary_field)
 
-        raw_id = (
-            sample["id"]
-            if ("id" in sample and isinstance(sample["id"], str))
-            else f"{dataset_name}_{idx}"
-        )
+        raw_id = f"{dataset_name}_{idx}"
 
         base_id = raw_id.replace("/", "_").replace(" ", "_")
 
