@@ -41,18 +41,18 @@ Thumbs.db
 #############################
 
 # Entire data directory:
-data/
+# data/
 
 # If you decide to keep empty structure, allow README:
 !data/README.md
 
 # Processed, cache, or derived artifacts:
-data/
-data/processed/
+# data/
+# data/processed/
 data/raw/
-data/processed/embeddings/
-data/processed/truncated_texts/
-data/processed/summaries/
+# data/processed/embeddings/
+# data/processed/truncated_texts/
+# data/processed/summaries/
 
 # Large model caches
 models/
@@ -78,6 +78,6 @@ results/*
 # Experiment outputs
 ########
 
-data/
+
 results/
 *.arrow
