@@ -144,12 +144,21 @@ def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, fu
 
     loaded = load_summary_file(summary_json_path)
 
-    rouge_scores = compute_rouge(
-        loaded["references"], loaded["predictions"]
-    )
+    filtered_refs = []
+    filtered_preds = []
+
+    for r, p in zip(loaded["references"], loaded["predictions"]):
+        if isinstance(r, str) and isinstance(p, str) and len(r.strip()) > 0 and len(p.strip()) > 0:
+            filtered_refs.append(r)
+            filtered_preds.append(p)
+
+    if len(filtered_refs) == 0:
+        raise ValueError(f"No valid reference–prediction pairs found in {summary_json_path}")
+
+    rouge_scores = compute_rouge(filtered_refs, filtered_preds)
 
     bert_scores = compute_bertscore(
-        loaded["references"], loaded["predictions"]
+        filtered_refs, filtered_preds
     ) if use_bertscore else {}
 
     token_stats = compute_token_stats(loaded["records"])
