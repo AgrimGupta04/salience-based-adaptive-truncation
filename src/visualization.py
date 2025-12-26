@@ -355,17 +355,28 @@ def plot_rouge_drop(df: pd.DataFrame, out_path: str):
     if df["is_full"].sum() == 0:
         raise ValueError("Full-context baseline missing")
 
-    full = df[df["is_full"]].set_index("dataset")["rougeL"]
-    trunc = df[~df["is_full"]]
+    # Ensure the full index is clean (e.g., 'cnn_dailymail')
+    full = df[df["is_full"]].copy()
+    full["dataset"] = full["dataset"].str.replace(r'_(tfidf|cosine|hybrid|salience)$', '', regex=True)
+    full = full.set_index("dataset")["rougeL"]
 
+    trunc = df[~df["is_full"]].copy()
     drop_records = []
 
     for _, row in trunc.iterrows():
-        drop_records.append({
-            "dataset": row["dataset"],
-            "token_budget": row["token_budget"],
-            "rouge_drop": full[row["dataset"]] - row["rougeL"]
-        })
+        # Clean the dataset name for lookup (remove the suffix)
+        clean_name = pd.Series([row["dataset"]]).str.replace(r'_(tfidf|cosine|hybrid|salience)$', '', regex=True).iloc[0]
+        
+        if clean_name in full.index:
+            drop_records.append({
+                "dataset": row["dataset"], # Keep original for the plot label
+                "token_budget": row["token_budget"],
+                "rouge_drop": full[clean_name] - row["rougeL"]
+            })
+
+    if not drop_records:
+        print("[Warning] No matching datasets found between full and truncated for ROUGE drop plot.")
+        return
 
     drop_df = pd.DataFrame(drop_records)
 
