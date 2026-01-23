@@ -2,11 +2,6 @@
 scripts/run_full_pipeline.py
 
 End-to-end orchestration for the salience-based token-budget truncation experiments.
-
-Usage: run this script from the repository root:
-    python scripts/run_full_pipeline.py
-
-It expects the repo layout you've been building (data/raw, data/processed, src/...).
 """
 
 import os
@@ -34,15 +29,14 @@ from src.summarizer import (
 from src.evaluation import evaluate_summary_file, save_evaluation_results
 from src.visualization import (
     load_metrics_csv,
-    plot_quality_vs_compression,
-    plot_rouge_bars,
+    plot_tradeoff_curves_aggregated,
+    plot_rouge_bars_aggregated,
+    plot_cost_vs_budget_aggregated,
+    plot_cost_vs_quality_aggregated,
     plot_token_distribution,
     plot_rouge_drop,
-    plot_salience_heatmap,
     plot_model_selection_histogram,
-    plot_bootstrap_ci,
-    plot_cost_vs_budget,
-    plot_cost_vs_quality
+    plot_bootstrap_ci
 )
 
 # ------------------------------
@@ -59,14 +53,16 @@ def load_dataset_config() -> Dict[str, dict]:
             "model": "facebook/bart-large-cnn",
             "input_field": "article",
             "summary_field": "highlights",
-            "max_chunk_tokens": 512
+            "max_chunk_tokens": 512,
+            "skip_full": False
         },
         "govreport": {
-            "budget": 2048,
+            "budget": 4096,
             "model": "allenai/led-base-16384",
             "input_field": "report",
             "summary_field": "summary",
-            "max_chunk_tokens": 1024
+            "max_chunk_tokens": 1024,
+            "skip_full": False
         },
         "arxiv": {
             "budget": 4096,
@@ -75,6 +71,7 @@ def load_dataset_config() -> Dict[str, dict]:
             "summary_field": "abstract",
             "max_chunk_tokens": 1024,
             "chunk": True,
+            "skip_full": True,
         }
     }
 
@@ -82,7 +79,7 @@ def load_dataset_config() -> Dict[str, dict]:
 # 2. Prepare dataset
 # ------------------------------
 def run_prepare_data(dataset_name: str, cfg: dict) -> str:
-    print(f"\n[prepare] {dataset_name} — loading raw dataset and preparing pairs")
+    print(f"\n[prepare] {dataset_name} —> loading raw dataset and preparing pairs")
     ds = load_dataset(dataset_name)
 
     pairs = prepare_data(
@@ -187,22 +184,30 @@ def run_summarization(dataset_name: str, cfg: dict, salience_type: str):
     """
     print(f"\n[summarize] running summarization for {dataset_name}")
 
-    baseline_model = cfg.get("model", "facebook/bart-large-cnn")
-    print(f"[summarize] baseline model: {baseline_model}")
-    baseline_pipe = load_summarization_model(baseline_model)
+    if not cfg.get("skip_full", False):
+        baseline_model = cfg.get("model", "facebook/bart-large-cnn")
+        print(f"[summarize] baseline model: {baseline_model}")
+        baseline_pipe = load_summarization_model(baseline_model)
 
-    pairs_file = f"data/processed/{dataset_name}_pairs.json"
-    if os.path.exists(pairs_file):
-        summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, batch_size=32)
+        pairs_file = f"data/processed/{dataset_name}_pairs.json"
+        if os.path.exists(pairs_file):
+            summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, batch_size=32)
+        else:
+            print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
     else:
-        print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
+        print(f"[summarize] skipping full-input baseline for {dataset_name}")
 
-    # Choose summarizer for truncated inputs
+
+    ## Choose summarizer for truncated inputs
     truncated_file = f"data/processed/truncated_texts/{dataset_name}_{salience_type}_salience_token_budget_{cfg['budget']}_truncated_summaries.json"
     if not os.path.exists(truncated_file):
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
 
-    chosen_model = choose_summarization_model_from_truncated(truncated_file)
+    if dataset_name == "arxiv":
+        chosen_model = "allenai/led-base-16384"
+    else:
+        chosen_model = choose_summarization_model_from_truncated(truncated_file)
+
     print(f"[summarize] chosen model for truncated: {chosen_model}")
     trunc_pipe = load_summarization_model(chosen_model)
 
@@ -215,19 +220,21 @@ def run_summarization(dataset_name: str, cfg: dict, salience_type: str):
 def run_evaluation(dataset_name: str, cfg: dict, salience_type: str):
     print(f"\n[evaluate] computing metrics for {dataset_name}")
 
-    # expected summary filenames created by summarizer functions
+    skip_full = cfg.get("skip_full", False)
+
+    ## expected summary filenames created by summarizer functions
     full_summary_file = f"data/processed/summaries/{os.path.basename(f'{dataset_name}_pairs')}_full_summaries.json"
     trunc_summary_file = f"data/processed/summaries/{dataset_name}_{salience_type}_salience_token_budget_{cfg['budget']}_truncated_summaries.json"
 
-    # Prior code used slightly different filenames; handle possible variants
-    # Try standard names first, fall back to alternative pattern
     candidates = [
         f"data/processed/summaries/{dataset_name}_pairs_full_summaries.json",
         f"data/processed/summaries/{dataset_name}_full_summaries.json",
         full_summary_file
     ]
     full_file = next((p for p in candidates if os.path.exists(p)), None)
-    if full_file is None:
+    if skip_full:
+        print(f"[evaluate] skipping baseline evaluation for {dataset_name}")
+    elif full_file is None:
         print(f"[evaluate] WARNING: full summary file not found for {dataset_name}; skipping baseline evaluation")
     else:
         res_full = evaluate_summary_file(full_file)
@@ -242,29 +249,45 @@ def run_evaluation(dataset_name: str, cfg: dict, salience_type: str):
 # ------------------------------
 # 8. Visualization
 # ------------------------------
-def run_visualization(metrics_csv: str = "results/metrics.csv"):
-    if not os.path.exists(metrics_csv):
-        print(f"[visualize] metrics CSV not found: {metrics_csv} — skipping visualization")
+def run_visualization(metrics_csv: str):
+    if not os.path.exists(metrics_csv): 
+        print(f"[visualize] CSV {metrics_csv} not found.")
         return
 
+    print(f"\n[visualize] Generating plots from {metrics_csv}...")
     df = load_metrics_csv(metrics_csv)
     os.makedirs("results/plots", exist_ok=True)
 
-    plot_quality_vs_compression(df, out_path="results/plots/quality_vs_compression.png")
-    plot_rouge_bars(df, out_path="results/plots/rouge_bars.png")
-    plot_token_distribution(df, out_path="results/plots/token_distribution.png")
-    plot_model_selection_histogram()
-    plot_rouge_drop(df, out_path="results/plots/rouge_drop.png")
-    plot_cost_vs_budget(df, out_path="results/plots/cost_vs_budget.png")
-    plot_cost_vs_quality(df, metric="rouge1", out_path="results/plots/cost_vs_quality.png")
+    plot_tradeoff_curves_aggregated(
+        df, out_path="results/plots/tradeoff_curve.png"
+    )
+    
+    plot_cost_vs_quality_aggregated(
+        df, out_path="results/plots/cost_vs_quality.png"
+    )
+    
+    plot_cost_vs_budget_aggregated(
+        df, out_path="results/plots/cost_vs_budget.png"
+    )
+    
+    plot_rouge_bars_aggregated(
+        df, out_path="results/plots/rouge_bars.png"
+    )
+    
+    plot_token_distribution(
+        df, out_path="results/plots/token_distribution.png"
+    )
+    
+    plot_rouge_drop(
+        df, out_path="results/plots/rouge_drop.png"
+    )
+    
+    plot_model_selection_histogram(
+        out_path="results/plots/model_selection.png"
+    )
 
-    ## Per-dataset bootstrap CI plots
-    for dataset_name in df["dataset"].unique():
-        try:
-            plot_bootstrap_ci(dataset_name)
-            # plot_salience_heatmap(dataset_name)
-        except Exception as e:
-            print(f"[visualize] Failed to generate CI plot for {dataset_name}: {e}")
+    for ds in df['dataset_clean'].unique():
+        plot_bootstrap_ci(ds)
 
     print("[visualize] plots saved to results/plots/")
 
@@ -273,41 +296,39 @@ def run_visualization(metrics_csv: str = "results/metrics.csv"):
 # ------------------------------
 def main():
     configs = load_dataset_config()
-    salience_types = ["tfidf", "cosine", "hybrid"] # Choose salience types here
+    salience_types = ["tfidf", "cosine", "hybrid"]
     os.makedirs("results", exist_ok=True)
 
     for dataset_name, cfg in configs.items():    
         print("\n" + "=" * 80)
-        print(f"RUNNING PIPELINE FOR: {dataset_name} with salience type: {salience_type}")
+        print(f"RUNNING PIPELINE FOR: {dataset_name}")
         print("=" * 80)
 
         try:
-            # 1. Prepare
+            ## 1. Prepare
             run_prepare_data(dataset_name, cfg)
 
-            # 2. Embeddings
+            ## 2. Embeddings
             run_build_embeddings(f"data/processed/{dataset_name}_pairs.json", dataset_name)
     
             for salience_type in salience_types:
-                # 3. Salience scoring
+                ## 3. Salience scoring
                 run_salience_scoring(dataset_name, salience_type)
 
-                # 4. Truncation (token_budget)
+                ## 4. Truncation (token_budget)
                 run_truncation(dataset_name, cfg["budget"], salience_type)
 
-                # 5. Summarization (baseline + truncated with auto model)
+                ## 5. Summarization (baseline + truncated with auto model)
                 run_summarization(dataset_name, cfg, salience_type)
 
-                # 6. Evaluation (appends to results/metrics.csv)
+                ## 6. Evaluation (appends to results/metrics.csv)
                 run_evaluation(dataset_name, cfg, salience_type)
 
             print(f"[main] completed dataset: {dataset_name}")
 
         except Exception as e:
             print(f"[main] ERROR processing {dataset_name}: {e}")
-            # continue with next dataset
 
-    # Final: make global plots from metrics.csv
     run_visualization(metrics_csv="results/metrics.csv")
     print("\nALL DONE")
 

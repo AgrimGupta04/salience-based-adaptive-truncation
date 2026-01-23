@@ -22,7 +22,7 @@ DEFAULT_MODEL = "facebook/bart-large-cnn"
 SUMMARIES_DIR = "data/processed/summaries/"
 PAIRS_DIR = "data/processed/"
 
-# CHECKPOINT SETTING: Save progress every 20 documents
+## CHECKPOINT SETTING: Saving progress every 20 documents
 CHECKPOINT_INTERVAL = 20 
 
 enc = tiktoken.get_encoding("cl100k_base")
@@ -34,7 +34,7 @@ def estimate_tokens(text: str) -> int:
     return len(enc.encode(text))
 
 def _load_model_with_offload(model_name: str, torch_dtype):
-    print(f"🔄 Attempting complex load with offload for {model_name}...")
+    print(f"Attempting complex load with offload for {model_name}...")
     try:
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
@@ -58,7 +58,7 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
             model_name = "google/pegasus-large"
         else:
             model_name = "allenai/led-base-16384"
-        print(f"🔄 Auto-selected model: {model_name}")
+        print(f"Auto-selected model: {model_name}")
 
     if device is None:
         device_idx = 0 if torch.cuda.is_available() else -1
@@ -69,15 +69,18 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
     use_offload = "led-" in model_name.lower() or "long-t5" in model_name.lower()
+    
+    if "led-" in model_name.lower():
+        tokenizer.model_max_length = 16384
 
     if use_offload:
         try:
             model = _load_model_with_offload(model_name, torch_dtype=torch_dtype)
-            print(f"✅ Loaded {model_name} with device_map='auto' and offload.")
+            print(f"Loaded {model_name} with device_map='auto' and offload.")
         except Exception as e:
             raise RuntimeError(f"Failed to load long model: {e}. Please use a smaller model.")
     else:
-        print(f"🚀 Loading standard model {model_name} directly to device {device_idx}...")
+        print(f"Loading standard model {model_name} directly to device {device_idx}...")
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
             torch_dtype=torch_dtype,
@@ -86,9 +89,8 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
         )
         if device_idx != -1:
             model.to(torch.device(device_idx))
-        print(f"✅ Loaded {model_name} directly.")
+        print(f"Loaded {model_name} directly.")
 
-    # FIX: Do not pass device argument if using accelerate/offload
     if use_offload:
         pipe = pipeline("summarization", model=model, tokenizer=tokenizer)
     else:
@@ -98,17 +100,16 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
 def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kwargs) -> List[str]:
     """Summarizes a list of texts (chunks or documents) in batches."""
     summaries = []
-    # Disable internal TQDM when running inside the checkpoint loop to avoid clutter
     iterator = range(0, len(texts), batch_size)
     
     for i in iterator:
         batch = texts[i: i + batch_size]
         try:
-            outs = model_pipe(batch, truncation=True, batch_size=batch_size, **gen_kwargs) 
+            outs = model_pipe(batch, batch_size=batch_size, **gen_kwargs) 
         except RuntimeError as e:
             print("GPU OOM — retrying with batch_size=1")
             torch.cuda.empty_cache()
-            outs = [model_pipe(t, truncation=True, **gen_kwargs)[0] for t in batch]
+            outs = [model_pipe(t, **gen_kwargs)[0] for t in batch]
         for o in outs:
             summaries.append(o["summary_text"].strip())
     return summaries
@@ -116,8 +117,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
 def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
     """Summarize records with Checkpointing support."""
     if gen_kwargs is None:
-        # **FIXED PARAMETERS:** Lower min_length and higher num_beams for robustness
-        gen_kwargs = {"max_length": 128, "min_length": 10, "num_beams": 1, "do_sample": False} 
+        gen_kwargs = {"max_length": 256, "min_length": 64, "num_beams": 4, "early_stopping": True, "do_sample": False, "no_repeat_ngram_size": 3} 
 
     os.makedirs(SUMMARIES_DIR, exist_ok=True)
     if out_name is None:
@@ -125,11 +125,11 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
         out_name = f"{base}"
     out_path = os.path.join(SUMMARIES_DIR, f"{out_name}.json")
 
-    # 1. Load Input Data
+    ## Load Input Data
     with open(truncated_json_path, "r", encoding="utf-8") as f:
         records = json.load(f)
 
-    # 2. Check for Existing Progress (Checkpointing)
+    ## Checking for Existing Progress (Checkpointing)
     results = []
     if os.path.exists(out_path):
         try:
@@ -140,7 +140,7 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
             print("[checkpoint] Existing file was corrupt. Starting from scratch.")
             results = []
 
-    # 3. Determine remaining work
+    ## Determine remaining work
     start_index = len(results)
     if start_index >= len(records):
         print(f"[checkpoint] All {len(records)} records already processed. Skipping.")
@@ -149,36 +149,40 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
     records_to_process = records[start_index:]
     
     if model_pipe is None:
-        # Just use a heuristic for loading model if not provided
-        texts_sample = [r["truncated_text"] for r in records_to_process[:50]]
-        max_tok = max(estimate_tokens(t) for t in texts_sample) if texts_sample else 2048
-        model_pipe = load_summarization_model(max_input_tokens=max_tok)
+        model_pipe = load_summarization_model(
+            model_name="allenai/led-base-16384",
+            max_input_tokens=16384
+        )
+
+    batch_size = min(batch_size, 2)
 
     print(f"[summarize] Starting processing from index {start_index} to {len(records)}...")
 
-    # 4. Process in Chunks (Checkpoint Intervals)
     pbar = tqdm(total=len(records_to_process), desc="Summarizing with Checkpoints")
     
     for i in range(0, len(records_to_process), CHECKPOINT_INTERVAL):
         chunk_recs = records_to_process[i : i + CHECKPOINT_INTERVAL]
         chunk_texts = [r["truncated_text"] for r in chunk_recs]
 
-        # Summarize this chunk
         chunk_summaries = summarize_batch(chunk_texts, model_pipe, batch_size, **gen_kwargs)
 
-        # Append results
         for rec, gen in zip(chunk_recs, chunk_summaries):
-            results.append({
+            result = {
                 "id": rec["id"],
                 "truncated_text": rec["truncated_text"],
-                "references": rec.get("summary", ""),
+                "references": rec.get("summary") or rec.get("gold_summary") or rec.get("references") or "",
                 "generated_summary": gen,
                 "tokens_before": rec.get("tokens_before"),
                 "tokens_after": rec.get("tokens_after"),
                 "model_name": model_pipe.model.config._name_or_path
-            })
+            }
+            
+            assert result[-1]["references"].strip() != "", \
+                f"Empty reference summary for record {rec['id']}"
+
+            results.append(result)
         
-        # SAVE CHECKPOINT TO DISK
+        ## Saving CHECKPOINT to disk
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         
@@ -199,11 +203,9 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
         out_name = f"{base}_full_summaries"
     out_path = os.path.join(SUMMARIES_DIR, f"{out_name}.json")
 
-    # 1. Load Data
     with open(pairs_file, "r", encoding="utf-8") as f:
         pairs = json.load(f)
 
-    # 2. Check Checkpoint
     results = []
     if os.path.exists(out_path):
         try:
@@ -259,8 +261,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16)
     args = parser.parse_args()
 
-    pipe = load_summarization_model(args.model)
+    pipe = None
     if args.truncated:
-        summarize_truncated_files(args.truncated, model_pipe=pipe, batch_size=args.batch_size)
+        summarize_truncated_files(args.truncated, model_pipe=None, batch_size=args.batch_size)
     if args.pairs:
+        pipe = load_summarization_model(args.model)
         summarize_full_pairs(args.pairs, model_pipe=pipe, batch_size=args.batch_size)
