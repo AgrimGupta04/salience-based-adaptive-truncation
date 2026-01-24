@@ -36,7 +36,7 @@ def load_metrics_csv(csv_path: str) -> pd.DataFrame:
             clean_name = name.replace('_pairs_full_summaries.json', '')
             return clean_name, 'Full Context'
 
-        match = re.search(r'^(.*)_(tfidf|cosine|hybrid|salience)(?:_|$)', name)
+        match = re.search(r'^(.*)_(tfidf|cosine|hybrid|salience|first_k|random_k|lead_n)(?:_|$)', name)
         if match:
             return match.group(1), match.group(2)
         
@@ -48,6 +48,8 @@ def load_metrics_csv(csv_path: str) -> pd.DataFrame:
         lambda x: pd.Series(parse_dataset_info(x)), axis=1
     )
 
+    df["is_baseline"] = df["method"].isin(["first_k", "random_k", "lead_n"])
+    df["is_salience"] = df["method"].isin(["tfidf", "cosine", "hybrid", "salience"])
     df["is_full"] = df["method"] == "Full Context"
     df["budget_label"] = df["token_budget"].fillna("Full").astype(str)
     df["compression_ratio"] = df["avg_tokens_after"] / df["avg_tokens_before"]
@@ -257,7 +259,7 @@ def aggregate_by_budget(df: pd.DataFrame) -> pd.DataFrame:
     Aggregates truncated runs by dataset and token budget.
     Salience methods are averaged out.
     """
-    trunc = df[~df["is_full"]].copy()
+    trunc = df[(~df["is_full"]) & (df["is_salience"])].copy()
 
     grouped = trunc.groupby(
         ["dataset_clean", "token_budget"],
@@ -373,3 +375,44 @@ def plot_bootstrap_ci(dataset_name: str, n_rounds: int = 10000):
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"[CI Plot] Saved {out_path}")
+
+def plot_quality_vs_cost(df, out_path, metric="rougeL"):
+    trunc = df[~df["is_full"]]
+
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(
+        data=trunc,
+        x="estimated_cost",
+        y=metric,
+        hue="method",
+        style="dataset_clean",
+        s=100
+    )
+    plt.xlabel("Average Cost (USD)")
+    plt.ylabel(metric)
+    plt.title("Quality vs Real Inference Cost")
+    plt.grid(alpha=0.3)
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+def plot_cost_at_quality_threshold(df, threshold=0.95):
+    records = []
+
+    for ds in df["dataset_clean"].unique():
+        full_score = df[(df["dataset_clean"] == ds) & (df["is_full"])]["rougeL"].mean()
+        cutoff = threshold * full_score
+
+        for method in df["method"].unique():
+            subset = df[
+                (df["dataset_clean"] == ds) &
+                (df["method"] == method) &
+                (df["rougeL"] >= cutoff)
+            ]
+            if not subset.empty:
+                records.append({
+                    "dataset": ds,
+                    "method": method,
+                    "min_cost_usd": subset["estimated_cost"].min()
+                })
+
+    return pd.DataFrame(records)

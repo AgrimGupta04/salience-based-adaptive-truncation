@@ -38,6 +38,17 @@ from src.visualization import (
     plot_model_selection_histogram,
     plot_bootstrap_ci
 )
+from src.utils import get_truncated_filename
+
+
+TRUNCATION_METHODS = [
+    # ("salience", "tfidf"),
+    # ("salience", "cosine"),
+    # ("salience", "hybrid"),
+    ("first_k", None),
+    ("random_k", None),
+    ("lead_n", None),
+]
 
 # ------------------------------
 # 1. Dataset configuration
@@ -168,16 +179,16 @@ def choose_summarization_model_from_truncated(truncated_json_path: str) -> str:
 # ------------------------------
 # 5. Truncate dataset
 # ------------------------------
-def run_truncation(dataset_name: str, token_budget: int, salience_type: str):
-    print(f"\n[truncate] {dataset_name} -> token_budget={token_budget}")
-    stats = truncate_dataset(dataset_name=dataset_name, token_budget=token_budget, salience_type=salience_type)
+def run_truncation(dataset_name: str, token_budget: int, truncation_method: str, salience_type: str):
+    print(f"[truncate] {dataset_name} | method={truncation_method} | budget={token_budget}")
+    stats = truncate_dataset(dataset_name=dataset_name, token_budget=token_budget, truncation_method=truncation_method, salience_type=salience_type)
     print(f"[truncate] done: avg_tokens_before={stats.get('avg_tokens_before'):.1f} avg_tokens_after={stats.get('avg_tokens_after'):.1f}")
     return stats
 
 # ------------------------------
 # 6. Summarization
 # ------------------------------
-def run_summarization(dataset_name: str, cfg: dict, salience_type: str):
+def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, salience_type: str):
     """
     Summarize full pairs (baseline) using cfg['model'], then choose model
     for truncated inputs and summarize them.
@@ -199,7 +210,14 @@ def run_summarization(dataset_name: str, cfg: dict, salience_type: str):
 
 
     ## Choose summarizer for truncated inputs
-    truncated_file = f"data/processed/truncated_texts/{dataset_name}_{salience_type}_salience_token_budget_{cfg['budget']}_truncated_summaries.json"
+    truncated_base = get_truncated_filename(
+        dataset_name,
+        truncation_method,
+        salience_type,
+        cfg["budget"]
+    )
+    truncated_file = f"data/processed/truncated_texts/{truncated_base.replace('.json', '_truncated_summaries.json')}"
+
     if not os.path.exists(truncated_file):
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
 
@@ -217,14 +235,21 @@ def run_summarization(dataset_name: str, cfg: dict, salience_type: str):
 # ------------------------------
 # 7. Evaluation
 # ------------------------------
-def run_evaluation(dataset_name: str, cfg: dict, salience_type: str):
+def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salience_type: str):
     print(f"\n[evaluate] computing metrics for {dataset_name}")
 
     skip_full = cfg.get("skip_full", False)
 
     ## expected summary filenames created by summarizer functions
     full_summary_file = f"data/processed/summaries/{os.path.basename(f'{dataset_name}_pairs')}_full_summaries.json"
-    trunc_summary_file = f"data/processed/summaries/{dataset_name}_{salience_type}_salience_token_budget_{cfg['budget']}_truncated_summaries.json"
+    truncated_base = get_truncated_filename(
+        dataset_name,
+        truncation_method,
+        salience_type,
+        cfg["budget"]
+    )
+    trunc_summary_file = f"data/processed/summaries/{truncated_base.replace('.json', '_truncated_summaries.json')}"
+
 
     candidates = [
         f"data/processed/summaries/{dataset_name}_pairs_full_summaries.json",
@@ -296,7 +321,6 @@ def run_visualization(metrics_csv: str):
 # ------------------------------
 def main():
     configs = load_dataset_config()
-    salience_types = ["tfidf", "cosine", "hybrid"]
     os.makedirs("results", exist_ok=True)
 
     for dataset_name, cfg in configs.items():    
@@ -311,18 +335,20 @@ def main():
             ## 2. Embeddings
             run_build_embeddings(f"data/processed/{dataset_name}_pairs.json", dataset_name)
     
-            for salience_type in salience_types:
-                ## 3. Salience scoring
-                run_salience_scoring(dataset_name, salience_type)
+            for truncation_method, salience_type in TRUNCATION_METHODS:
 
-                ## 4. Truncation (token_budget)
-                run_truncation(dataset_name, cfg["budget"], salience_type)
+                if truncation_method == "salience":
+                    run_salience_scoring(dataset_name, salience_type)
 
-                ## 5. Summarization (baseline + truncated with auto model)
-                run_summarization(dataset_name, cfg, salience_type)
+                run_truncation(
+                    dataset_name=dataset_name,
+                    token_budget=cfg["budget"],
+                    truncation_method=truncation_method,
+                    salience_type=salience_type
+                )
 
-                ## 6. Evaluation (appends to results/metrics.csv)
-                run_evaluation(dataset_name, cfg, salience_type)
+                run_summarization(dataset_name, cfg, truncation_method, salience_type)
+                run_evaluation(dataset_name, cfg, truncation_method, salience_type)
 
             print(f"[main] completed dataset: {dataset_name}")
 

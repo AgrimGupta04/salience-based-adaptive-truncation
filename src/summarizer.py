@@ -154,7 +154,7 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
             max_input_tokens=16384
         )
 
-    batch_size = min(batch_size, 2)
+    batch_size = min(batch_size, 2)     ## For LED safety 
 
     print(f"[summarize] Starting processing from index {start_index} to {len(records)}...")
 
@@ -177,7 +177,7 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
                 "model_name": model_pipe.model.config._name_or_path
             }
             
-            assert result[-1]["references"].strip() != "", \
+            assert result["references"].strip() != "", \
                 f"Empty reference summary for record {rec['id']}"
 
             results.append(result)

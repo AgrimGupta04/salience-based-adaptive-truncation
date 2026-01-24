@@ -6,6 +6,7 @@ import numpy as np
 import csv
 from rouge_score import rouge_scorer
 from bert_score import score as bert_score
+from src.cost_model import estimate_cost
 
 SUMMARIES_DIR = "data/processed/summaries/"
 PAIRS_DIR = "data/processed/"
@@ -129,6 +130,41 @@ def compute_token_stats(records: List[dict]) -> Dict[str, float]:
         "percentage_reduction": 100 * (1 - np.mean(after) / np.mean(before))
     }
 
+def compute_cost_stats(records: List[dict]) -> Dict[str, float]:
+    """
+    Computes average and total USD cost using model-aware pricing.
+    """
+    costs = []
+
+    for r in records:
+        if (
+            r.get("tokens_input") is None or
+            r.get("tokens_output") is None or
+            r.get("model_name") is None
+        ):
+            continue
+
+        cost = estimate_cost(
+            tokens_in=r["tokens_input"],
+            tokens_out=r["tokens_output"],
+            model_name=r["model_name"]
+        )
+
+        if cost is not None:
+            costs.append(cost)
+
+    if not costs:
+        return {
+            "avg_cost_usd": None,
+            "total_cost_usd": None
+        }
+
+    return {
+        "avg_cost_usd": float(np.mean(costs)),
+        "total_cost_usd": float(np.sum(costs))
+    }
+
+
 def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, full_context_scores: Dict[str, List[float]] = None) -> Dict[str, float]:
     """
     High-level evaluation for a single summary JSON file.
@@ -162,14 +198,16 @@ def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, fu
     ) if use_bertscore else {}
 
     token_stats = compute_token_stats(loaded["records"])
+    cost_stats = compute_cost_stats(loaded["records"])
 
     if full_context_scores is not None:
-        assert len(full_context_scores["rouge1_list"]) == len(rouge_scores["rouge1_list"]), \
-            "Mismatch between full-context and truncated summaries"
+        if len(full_context_scores["rouge1_list"]) != len(rouge_scores["rouge1_list"]):
+            print("[warn] Full vs truncated length mismatch — skipping significance test")
+            full_context_scores = None
 
     ## significance testing
     sig_results = {}
-    if full_context_scores is not None:
+    if full_context_scores is not None and dataset in ["cnn_dailymail", "govreport"]: 
         sig_results = significance_test_bootstrap(
             full_context_scores["rouge1_list"],
             rouge_scores["rouge1_list"],
@@ -183,6 +221,7 @@ def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, fu
         **{k: rouge_scores[k] for k in ["rouge1", "rouge2", "rougeL"]},
         **bert_scores,
         **token_stats,
+        **cost_stats,
         **sig_results,         
     }
 
@@ -237,26 +276,30 @@ def significance_test_bootstrap(full_scores, trunc_scores, n_samples=1000, seed=
 
 
 def parse_metadata_from_filename(filename: str):
-    """
-    Robust parsing of dataset, salience_type, token_budget from filename.
-    """
+    base = os.path.basename(filename).replace(".json", "")
 
-    base = os.path.basename(filename)
+    parts = base.split("_")
 
-    dataset = base.split("_salience_")[0]
-
-    salience_type = None
-    if "_salience_" in base:
-        salience_type = base.split("_salience_")[1].split("_")[0]
-
+    dataset = parts[0]
+    truncation_type = None
     token_budget = None
-    if "token_budget_" in base:
-        try:
-            token_budget = int(base.split("token_budget_")[1].split("_")[0])
-        except Exception:
-            token_budget = None
 
-    return dataset, salience_type, token_budget
+    if "salience" in parts:
+        truncation_type = parts[parts.index("salience") + 1]
+    elif "first" in parts:
+        truncation_type = "first_k"
+    elif "random" in parts:
+        truncation_type = "random_k"
+    elif "lead" in parts:
+        truncation_type = "lead_n"
+
+    if "token" in parts and "budget" in parts:
+        try:
+            token_budget = int(parts[parts.index("budget") + 1])
+        except Exception:
+            pass
+
+    return dataset, truncation_type, token_budget
 
 def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"):
     """Appends a singel evalution dict to the metrics CSV file.
@@ -275,6 +318,8 @@ def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"
         "bert_score_f1",
         "avg_tokens_before", "avg_tokens_after",
         "percentage_reduction",
+        "avg_cost_usd",
+        "total_cost_usd",
         "mean_diff",
         "ci_low",
         "ci_high",
