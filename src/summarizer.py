@@ -152,27 +152,50 @@ def summarize_batch(
     texts: List[str], 
     model_pipe, 
     gen_kwargs: Dict[str, any],
-    batch_size: int = 4
+    batch_size: int = 2  # Reduce to 2 for LED (memory intensive)
 ) -> List[str]:
-    """Summarize batch with CONSTANT parameters."""
+    """
+    Fix: Use smaller batch size and better error handling for LED.
+    """
     if not texts:
         return []
     
+    # Clean texts
     texts = [t if t and t.strip() else " " for t in texts]
+    
     summaries = []
     
+    # Process in tiny batches for LED
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         
         try:
-            outputs = model_pipe(batch, **gen_kwargs)
-            batch_summaries = []
-            for output in outputs:
-                if isinstance(output, dict) and "summary_text" in output:
-                    batch_summaries.append(output["summary_text"].strip())
-                else:
-                    batch_summaries.append("")
-            summaries.extend(batch_summaries)
+            # For LED, we need to be careful with memory
+            if "led" in str(model_pipe.model.config).lower():
+                # Process one at a time for LED
+                batch_summaries = []
+                for text in batch:
+                    try:
+                        # Truncate very long inputs for LED
+                        if len(text) > 500000:  # ~125K tokens
+                            text = text[:500000]
+                        
+                        output = model_pipe(text, **gen_kwargs)[0]
+                        batch_summaries.append(output["summary_text"].strip())
+                    except Exception as e:
+                        print(f"⚠ LED failed on sample: {e}")
+                        batch_summaries.append("")
+                summaries.extend(batch_summaries)
+            else:
+                # Normal batch processing for BART
+                outputs = model_pipe(batch, **gen_kwargs)
+                batch_summaries = []
+                for output in outputs:
+                    if isinstance(output, dict) and "summary_text" in output:
+                        batch_summaries.append(output["summary_text"].strip())
+                    else:
+                        batch_summaries.append("")
+                summaries.extend(batch_summaries)
             
         except Exception as e:
             print(f"⚠ Batch failed: {e}, retrying singly...")

@@ -127,19 +127,16 @@ def chunk_text_sentence_aligned(
     dataset_name: str = ""
 ) -> Tuple[List[str], List[int]]:
     """
-    Splits text into sentence-aligned chunks (as described in paper).
-    
-    Args:
-        text: Input text
-        tokenizer: Model-specific tokenizer
-        max_tokens: Maximum tokens per chunk
-        dataset_name: For logging
-    
-    Returns:
-        Tuple of (chunks, chunk_token_counts)
+    Fix: Ensure we're actually chunking long documents.
     """
+    if not text or not text.strip():
+        return [], []
+    
     # Split into sentences
     sentences = nltk.sent_tokenize(text)
+    
+    if not sentences:
+        return [], []
     
     chunks = []
     chunk_token_counts = []
@@ -148,14 +145,49 @@ def chunk_text_sentence_aligned(
     
     for i, sentence in enumerate(sentences):
         # Tokenize sentence
-        sentence_tokens = tokenizer.encode(sentence, add_special_tokens=False)
-        sentence_token_count = len(sentence_tokens)
+        try:
+            sentence_tokens = tokenizer.encode(sentence, add_special_tokens=False)
+            sentence_token_count = len(sentence_tokens)
+        except:
+            # Fallback: rough estimate
+            sentence_token_count = len(sentence.split()) * 1.33
         
-        # Check if adding this sentence would exceed max_tokens
-        if current_token_count + sentence_token_count > max_tokens and current_chunk:
+        # If single sentence exceeds max_tokens, split it
+        if sentence_token_count > max_tokens:
+            # Split long sentence by words
+            words = sentence.split()
+            word_chunks = []
+            current_word_chunk = []
+            current_word_count = 0
+            
+            for word in words:
+                word_token_count = 1  # Approximate
+                if current_word_count + word_token_count > max_tokens:
+                    word_chunks.append(" ".join(current_word_chunk))
+                    current_word_chunk = [word]
+                    current_word_count = word_token_count
+                else:
+                    current_word_chunk.append(word)
+                    current_word_count += word_token_count
+            
+            if current_word_chunk:
+                word_chunks.append(" ".join(current_word_chunk))
+            
+            # Process each word chunk as separate "sentence"
+            for word_chunk in word_chunks:
+                if current_token_count > 0:
+                    chunks.append(" ".join(current_chunk))
+                    chunk_token_counts.append(current_token_count)
+                    current_chunk = []
+                    current_token_count = 0
+                
+                chunks.append(word_chunk)
+                chunk_token_counts.append(len(tokenizer.encode(word_chunk, add_special_tokens=False)))
+        
+        # Normal sentence processing
+        elif current_token_count + sentence_token_count > max_tokens and current_chunk:
             # Save current chunk
-            chunk_text = " ".join(current_chunk)
-            chunks.append(chunk_text)
+            chunks.append(" ".join(current_chunk))
             chunk_token_counts.append(current_token_count)
             
             # Start new chunk
@@ -168,16 +200,12 @@ def chunk_text_sentence_aligned(
     
     # Add last chunk if any
     if current_chunk:
-        chunk_text = " ".join(current_chunk)
-        chunks.append(chunk_text)
+        chunks.append(" ".join(current_chunk))
         chunk_token_counts.append(current_token_count)
     
-    # Log chunking statistics
-    if chunks:
-        avg_chunk_tokens = sum(chunk_token_counts) / len(chunk_token_counts)
-        print(f"  [{dataset_name}] Chunking stats: {len(chunks)} chunks, "
-              f"avg {avg_chunk_tokens:.1f} tokens/chunk, "
-              f"max {max(chunk_token_counts)} tokens")
+    # Debug: Print chunking stats
+    if chunks and len(chunks) > 1:
+        print(f"  [{dataset_name}] Created {len(chunks)} chunks from text")
     
     return chunks, chunk_token_counts
 
