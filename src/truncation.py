@@ -1,287 +1,470 @@
 """
-truncation.py
-----------------
+truncation.py 
 
-This module turns salience scores inro actual trancated inputs for the summarizer. 
-It's the experimental lever we vary to produce the token-quality tradeoff curves.
-Selects adn keeps only top K chunks based on precomputed salience scores.
+Implements adaptive truncation for salience-based summarization.
+Implements the exact algorithm described in the paper.
+
+Author: Agrim Gupta
 """
 
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
 import numpy as np
 import os
 import json
 from tqdm import tqdm
-import tiktoken
+import random
 
 DATA_PATH = "data/processed/"
 SALIENCE_PATH = os.path.join(DATA_PATH, "salience_scores/")
 TRUNCATED_PATH = os.path.join(DATA_PATH, "truncated_texts/")
+os.makedirs(TRUNCATED_PATH, exist_ok=True)
 
-enc = tiktoken.get_encoding("cl100k_base")
+# Token budgets from paper
+TOKEN_BUDGETS = {
+    "cnn_dailymail": 512,
+    "govreport": 4096,
+    "arxiv": 4096
+}
 
 def load_salience_scores(dataset_name: str, salience_type: str) -> Dict[str, float]:
-    """Read salience scores from JSON and return maping from chunk ID to score.
-    
-    1. Load salience scores from {dataset_name}_salience_scores.json.
-    2. Validate format -> expect list of objects {"id": id, "salience_score": score}.
-    3. Returns dictionary {id: float(score)}.
-    """
-
+    """Load salience scores from JSON file."""
     path = os.path.join(SALIENCE_PATH, f"{dataset_name}_{salience_type}_salience.json")
+    
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Salience scores for {dataset_name} not found at {path}. Please run salience_scoring.py first.")
+        raise FileNotFoundError(
+            f"Salience scores for {dataset_name} ({salience_type}) not found at {path}.\n"
+            f"Please run salience_scoring.py first."
+        )
     
     with open(path, "r", encoding="utf-8") as f:
         salience_data = json.load(f)
-        assert isinstance(salience_data, list), "Salience file must be a list of dicts"
+    
+    if not isinstance(salience_data, list):
+        raise ValueError(f"Salience file must be a list, got {type(salience_data)}")
+    
+    # Create mapping from chunk ID to score
+    scores = {}
+    for item in salience_data:
+        chunk_id = item.get("id")
+        if chunk_id:
+            scores[chunk_id] = float(item.get("salience_score", 0.0))
+    
+    print(f"✓ Loaded {len(scores)} salience scores for {dataset_name} ({salience_type})")
+    return scores
 
-    return {d["id"]: float(d.get("salience_score", 0.0)) for d in salience_data}
+def load_pairs_with_token_counts(dataset_name: str) -> List[dict]:
+    """Load preprocessed pairs with proper token counts."""
+    pairs_path = os.path.join(DATA_PATH, f"{dataset_name}_pairs.json")
+    
+    if not os.path.exists(pairs_path):
+        raise FileNotFoundError(
+            f"Pairs not found at {pairs_path}. Run prepare_data in data_loader.py first."
+        )
+    
+    with open(pairs_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    # Handle both old format (list of pairs) and new format (dict with pairs)
+    if isinstance(data, dict) and "pairs" in data:
+        pairs = data["pairs"]
+    else:
+        pairs = data
+    
+    # Ensure each pair has token count
+    for pair in pairs:
+        if "tokens" not in pair:
+            # Estimate token count (words * 1.33)
+            pair["tokens"] = int(len(pair["text"].split()) * 1.33)
+    
+    print(f"✓ Loaded {len(pairs)} pairs for {dataset_name}")
+    return pairs
 
 def group_chunks_by_document(pairs: List[dict]) -> Dict[str, List[dict]]:
     """
-    Groups chunked text samples (from prepare_data) by their original dicument.
-    Expects chunk IDS like '<docid>_<chunkindex>'.
+    Groups chunked text samples by their original document.
+    Expects chunk IDs like 'dataset_docid_chunkidx'.
     """
-
     groups = {}
+    
     for sample in pairs:
         sample_id = sample["id"]
-        doc_id = "_".join(sample_id.split("_")[:-1])  if "_" in sample_id else sample_id
-        token_count = len(enc.encode(sample["text"]))
-        entry = {
-            "id": sample_id,
-            "doc_id": doc_id,
-            "text": sample["text"],
-            "summary": sample["summary"],
-            "token_count": token_count
-        }
-        groups.setdefault(doc_id, []).append(entry)
-
-    for doc in groups:
-        groups[doc] = sorted(
-            groups[doc],
-            key=lambda ch: int(ch["id"].split("_")[-1]) if "_" in ch["id"] else 0
-        )
-
+        
+        # Extract document ID (remove chunk index)
+        parts = sample_id.split("_")
+        if len(parts) >= 3:
+            # Format: dataset_docid_chunkidx
+            doc_id = "_".join(parts[:-1])
+            chunk_idx = int(parts[-1])
+        else:
+            # No chunking was done
+            doc_id = sample_id
+            chunk_idx = 0
+        
+        # Add chunk index for sorting
+        sample_with_idx = sample.copy()
+        sample_with_idx["chunk_idx"] = chunk_idx
+        
+        # Group by document
+        if doc_id not in groups:
+            groups[doc_id] = []
+        groups[doc_id].append(sample_with_idx)
+    
+    # Sort chunks within each document by chunk index
+    for doc_id in groups:
+        groups[doc_id].sort(key=lambda x: x["chunk_idx"])
+    
+    print(f"  Grouped into {len(groups)} documents")
+    
+    # Print statistics
+    chunk_counts = [len(chunks) for chunks in groups.values()]
+    if chunk_counts:
+        print(f"  Avg chunks per doc: {np.mean(chunk_counts):.1f}")
+        print(f"  Max chunks per doc: {max(chunk_counts)}")
+    
     return groups
 
-# def select_top_chunks_by_score(chunks: List[dict], scores: Dict[str, float], keep_ratio: float = 0.3) -> List[dict]:
-#     """Selects top k% chunks for a single document based on salience scores.
-
-#     Args:
-#         chunks: List of chunk dicts for a single document.
-#         scores: Mapping from chunk ID to salience score.
-#         keep_ratio: Fraction of chunks to keep (0 < keep_ratio <= 1).
-#     """
-
-#     scored = [(ch, scores.get(ch["id"], 0.0)) for ch in chunks]
-#     scored = sorted(scored, key=lambda x: x[1], reverse=True)
-#     keep_n = max(1, int(len(chunks) * keep_ratio))
-#     if len(chunks) < 3:
-#         keep_n = len(chunks)    ## Keep all chunks if less than 3 chunks.
-#     selected = [ch for ch, _ in scored[:keep_n]]         ## Select top k chunks based on score
-#     selected = sorted(selected, key=lambda x: int(x["id"].split("_")[-1]) if "_" in x["id"] else 0)  ## Restore original order
-#     return selected
-
-def select_top_tokens_by_score(chunks: List[dict], scores: Dict[str, float], token_budget: int = 2048) -> List[dict]:
-    """Select top chunks whose total token count is within the token budget., maximizing total salience score.
-    
-    1. Compute pre-chunk token counts score_per_token = score / token_count.
-    2. Sort chunks b y score_per_token descending.
-    3. Iteratively add chunks while sum(tokens) + chunk.token_chunk <= token_budget.
-    4. Return selected chunks in original order.
-
-    Args:
-        chunks: List of chunk dicts for a single document.
-        scores: Mapping from chunk ID to salience score.
-        token_budget: Maximum total token count to keep.
+def select_chunks_by_salience(
+    chunks: List[dict], 
+    scores: Dict[str, float], 
+    token_budget: int
+) -> Tuple[List[dict], int, float]:
     """
+    Select chunks in descending order of salience score until token budget is reached.
+    Returns: (selected_chunks, total_tokens, total_salience)
+    """
+    if not chunks:
+        return [], 0, 0.0
+    
+    # Score each chunk
+    scored_chunks = []
+    for chunk in chunks:
+        chunk_id = chunk["id"]
+        chunk_score = scores.get(chunk_id, 0.0)
+        chunk_tokens = chunk.get("tokens", 0)
+        
+        if chunk_tokens > 0:
+            scored_chunks.append({
+                "chunk": chunk,
+                "score": chunk_score,
+                "tokens": chunk_tokens,
+                "id": chunk_id
+            })
+    
+    # Sort by score descending
+    scored_chunks.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Greedy selection: pick highest-scoring chunks until budget is reached
+    selected = []
+    total_tokens = 0
+    total_score = 0.0
+    
+    for item in scored_chunks:
+        if total_tokens + item["tokens"] <= token_budget:
+            selected.append(item["chunk"])
+            total_tokens += item["tokens"]
+            total_score += item["score"]
+    
+    # If no chunks selected (all too large), pick the smallest chunk
+    if not selected and scored_chunks:
+        smallest = min(scored_chunks, key=lambda x: x["tokens"])
+        selected = [smallest["chunk"]]
+        total_tokens = smallest["tokens"]
+        total_score = smallest["score"]
+    
+    # Sort selected chunks by original order
+    selected.sort(key=lambda x: x["chunk_idx"])
+    
+    return selected, total_tokens, total_score
 
-    scored = [] 
-    for ch in chunks:
-        s = scores.get(ch["id"], 0.0)
-        tc = ch["token_count"]
-        if tc > 0:
-            scored.append((ch, s/max(tc, 1)))
+def select_chunks_first_k(
+    chunks: List[dict], 
+    token_budget: int
+) -> Tuple[List[dict], int]:
+    """
+    Select chunks from the beginning until token budget is reached.
+    """
+    selected = []
+    total_tokens = 0
+    
+    for chunk in chunks:  # Already in original order
+        chunk_tokens = chunk.get("tokens", 0)
+        
+        if total_tokens + chunk_tokens <= token_budget:
+            selected.append(chunk)
+            total_tokens += chunk_tokens
+        else:
+            break
+    
+    # Ensure at least one chunk
+    if not selected and chunks:
+        selected = [chunks[0]]
+        total_tokens = chunks[0].get("tokens", 0)
+    
+    return selected, total_tokens
 
-    scored = sorted(scored, key=lambda x: x[1], reverse=True)
-
-    selected, used_tokens = [], 0
-    for ch, _ in scored:
-        if used_tokens + ch["token_count"] > token_budget:
-            continue
-        selected.append(ch)
-        used_tokens += ch["token_count"]
-
-    if not selected:
-        selected = [min(chunks, key=lambda x: x["token_count"])]  ## Ensure at least one chunk is selected.
-
-    selected = sorted(selected, key = lambda x: int(x["id"].split("_")[-1])  if "_" in x["id"] else 0)  ## Restore original order
-    return selected
+def select_chunks_random_k(
+    chunks: List[dict], 
+    token_budget: int,
+    seed: int = 42
+) -> Tuple[List[dict], int]:
+    """
+    Randomly select chunks until token budget is reached.
+    Uses multiple random seeds for stability (averaged in evaluation).
+    """
+    rng = random.Random(seed)
+    
+    # Create a copy to shuffle
+    chunks_copy = chunks.copy()
+    rng.shuffle(chunks_copy)
+    
+    selected = []
+    total_tokens = 0
+    
+    for chunk in chunks_copy:
+        chunk_tokens = chunk.get("tokens", 0)
+        
+        if total_tokens + chunk_tokens <= token_budget:
+            selected.append(chunk)
+            total_tokens += chunk_tokens
+    
+    # Ensure at least one chunk
+    if not selected and chunks:
+        selected = [chunks[0]]
+        total_tokens = chunks[0].get("tokens", 0)
+    
+    # Restore original order
+    selected.sort(key=lambda x: x["chunk_idx"])
+    
+    return selected, total_tokens
 
 def assemble_truncated_text(selected_chunks: List[dict]) -> str:
     """
     Concatenates selected chunks into a single truncated text string.
+    Adds paragraph breaks between chunks for readability.
     """
-    return "\n\n".join([ch["text"] for ch in selected_chunks])
+    if not selected_chunks:
+        return ""
+    
+    # Join with double newlines to preserve paragraph structure
+    texts = [chunk["text"].strip() for chunk in selected_chunks]
+    return "\n\n".join(texts)
 
-def truncate_dataset(dataset_name: str, token_budget: int, truncation_method: str, salience_type:str | None = None, seed: int = 42):
+def truncate_dataset(
+    dataset_name: str, 
+    token_budget: Optional[int] = None,
+    truncation_method: str = "salience",
+    salience_type: Optional[str] = None,
+    seed: int = 42
+) -> dict:
     """
-    This module converts salience scores into adaptively truncated inputs
-    under a fixed token budget. Chunks are selected greedily to maximize
-    salience per token, producing token quality tradeoff curves.
-
+    Main truncation function that implements adaptive truncation.
+    
     Args:
-    dataset_name: Name of dataset (e.g., "cnn_dailymail")
-    token_budget: Maximum number of tokens allowed after truncation
-    salience_type: Salience scoring method used ("tfidf", "cosine", "hybrid")
+        dataset_name: Name of dataset
+        token_budget: Maximum tokens (default from paper)
+        truncation_method: "salience", "first_k", "random_k", "lead_n"
+        salience_type: "tfidf", "cosine", "hybrid" (required for salience method)
+        seed: Random seed for random_k
+    
+    Returns:
+        Statistics dictionary
     """
-
-    pairs_path = os.path.join(DATA_PATH, f"{dataset_name}_pairs.json")
-    if not os.path.exists(pairs_path):
-        raise FileNotFoundError(f"Pairs not found at {pairs_path}. Run prepare_data first.")
-
-    with open(pairs_path, "r", encoding="utf-8") as f:
-        pairs = json.load(f)
-
-    print(f"Loaded {len(pairs)} samples from {pairs_path}")
-    print(f"[truncate] {dataset_name} | salience={salience_type} | budget={token_budget}")
-
+    # Set default token budget from paper
+    if token_budget is None:
+        token_budget = TOKEN_BUDGETS.get(dataset_name, 512)
+    
+    print(f"\n{'='*60}")
+    print(f"TRUNCATING: {dataset_name}")
+    print(f"Method: {truncation_method} | Budget: {token_budget} tokens")
+    if salience_type:
+        print(f"Salience type: {salience_type}")
+    print(f"{'='*60}")
+    
+    # Load pairs and group by document
+    pairs = load_pairs_with_token_counts(dataset_name)
     groups = group_chunks_by_document(pairs)
+    
+    # Load salience scores if needed
     scores = None
     if truncation_method == "salience":
+        if not salience_type:
+            raise ValueError("salience_type required for salience truncation")
         scores = load_salience_scores(dataset_name, salience_type)
-
+    
+    # Process each document
     truncated_records = []
-    tokens_before, tokens_after = [], []
-
-    checkpoint_every = 500
-    processed = 0
-
+    tokens_before_list = []
+    tokens_after_list = []
+    salience_scores_list = []
+    
     for doc_id, chunks in tqdm(groups.items(), desc=f"Truncating {dataset_name}"):
-
+        # Calculate original document tokens
+        doc_tokens_before = sum(chunk.get("tokens", 0) for chunk in chunks)
+        tokens_before_list.append(doc_tokens_before)
+        
+        # Select chunks based on method
         if truncation_method == "salience":
-            selected = select_top_tokens_by_score(chunks, scores, token_budget)
-
+            selected, doc_tokens_after, total_salience = select_chunks_by_salience(
+                chunks, scores, token_budget
+            )
+            salience_scores_list.append(total_salience)
+            
         elif truncation_method == "first_k":
-            selected = select_first_k_tokens(chunks, token_budget)
-
+            selected, doc_tokens_after = select_chunks_first_k(chunks, token_budget)
+            
         elif truncation_method == "random_k":
-            selected = select_random_k_tokens(chunks, token_budget, seed)
-
+            selected, doc_tokens_after = select_chunks_random_k(chunks, token_budget, seed)
+            
         elif truncation_method == "lead_n":
-            selected = select_lead_n_chunks(chunks, token_budget)
-
+            # Same as first_k for sentence-aligned chunks
+            selected, doc_tokens_after = select_chunks_first_k(chunks, token_budget)
+            
         else:
             raise ValueError(f"Unknown truncation_method: {truncation_method}")
-
+        
+        # Assemble truncated text
         truncated_text = assemble_truncated_text(selected)
-
-        rec = {
+        
+        # Get reference summary (from first chunk)
+        reference_summary = chunks[0]["summary"] if chunks else ""
+        
+        # Create record
+        record = {
             "id": doc_id,
             "truncated_text": truncated_text,
-            "summary": chunks[0]["summary"],
-            "tokens_before": sum(c["token_count"] for c in chunks),
-            "tokens_after": sum(c["token_count"] for c in selected),
-            "kept_chunk_count": len(selected),
-            "salience_type": salience_type if truncation_method == "salience" else truncation_method,
+            "reference_summary": reference_summary,
+            "tokens_before": doc_tokens_before,
+            "tokens_after": doc_tokens_after,
+            "kept_chunks": len(selected),
+            "total_chunks": len(chunks),
+            "truncation_method": truncation_method,
+            "salience_type": salience_type if truncation_method == "salience" else None,
             "token_budget": token_budget,
+            "compression_ratio": doc_tokens_after / doc_tokens_before if doc_tokens_before > 0 else 0
         }
-
-        truncated_records.append(rec)
-        tokens_before.append(rec["tokens_before"])
-        tokens_after.append(rec["tokens_after"])
-
-        processed += 1
-        if processed % checkpoint_every == 0:
-            print(f"[checkpoint] Saving partial — {processed} docs...")
-            save_truncated(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
-
-    save_truncated(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
+        
+        truncated_records.append(record)
+        tokens_after_list.append(doc_tokens_after)
+    
+    # Calculate statistics
+    avg_tokens_before = float(np.mean(tokens_before_list))
+    avg_tokens_after = float(np.mean(tokens_after_list))
+    percentage_reduction = 100 * (1 - avg_tokens_after / avg_tokens_before) if avg_tokens_before > 0 else 0
+    
     stats = {
         "dataset": dataset_name,
-        "salience_type": salience_type if truncation_method == "salience" else truncation_method,
+        "truncation_method": truncation_method,
+        "salience_type": salience_type,
         "token_budget": token_budget,
-        "avg_tokens_before": float(np.mean(tokens_before)),
-        "avg_tokens_after": float(np.mean(tokens_after)),
-        "percentage_reduction": 100* (1 - float(np.mean(tokens_after)) / float(np.mean(tokens_before))),
+        "documents_processed": len(truncated_records),
+        "avg_tokens_before": avg_tokens_before,
+        "avg_tokens_after": avg_tokens_after,
+        "percentage_reduction": percentage_reduction,
+        "avg_compression_ratio": avg_tokens_after / avg_tokens_before if avg_tokens_before > 0 else 0,
+        "avg_chunks_kept": np.mean([r["kept_chunks"] for r in truncated_records]),
+        "avg_total_chunks": np.mean([r["total_chunks"] for r in truncated_records])
     }
-
-    print(f"[{dataset_name}] Avg tokens reduced by {stats['percentage_reduction']:.2f}%")
+    
+    if salience_scores_list:
+        stats["avg_salience_score"] = float(np.mean(salience_scores_list))
+    
+    # Save truncated data
+    save_truncated_data(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
+    
+    # Print summary
+    print(f"\n✅ Truncation Complete for {dataset_name}")
+    print(f"   Documents: {len(truncated_records)}")
+    print(f"   Avg tokens before: {avg_tokens_before:.1f}")
+    print(f"   Avg tokens after: {avg_tokens_after:.1f}")
+    print(f"   Token reduction: {percentage_reduction:.1f}%")
+    print(f"   Compression ratio: {stats['avg_compression_ratio']:.3f}")
+    
     return stats
 
-def save_truncated(dataset_name: str, truncated_records: List[dict], token_budget: int, truncation_method: str, salience_type:str | None = None):
-    """
-    Saves truncated dataset to JSON file.
-    """
-    os.makedirs(TRUNCATED_PATH, exist_ok=True)
+def save_truncated_data(
+    dataset_name: str,
+    truncated_records: List[dict],
+    token_budget: int,
+    truncation_method: str,
+    salience_type: Optional[str] = None
+):
+    """Save truncated dataset to JSON file."""
+    # Create filename
     if truncation_method == "salience":
-        name = f"{dataset_name}_salience_{salience_type}_budget_{token_budget}.json"
+        filename = f"{dataset_name}_{salience_type}_salience_token_budget_{token_budget}_truncated.json"
     else:
-        name = f"{dataset_name}_{truncation_method}_budget_{token_budget}.json"
-
-    path = os.path.join(TRUNCATED_PATH, name)
+        filename = f"{dataset_name}_{truncation_method}_budget_{token_budget}.json"
+    
+    path = os.path.join(TRUNCATED_PATH, filename)
+    
     with open(path, "w", encoding="utf-8") as f:
         json.dump(truncated_records, f, indent=2)
-    print(f"Saved truncated dataset to {path}")
-
-
-def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
-    selected, used = [], 0
-    for ch in chunks:  # already in original order
-        if used + ch["token_count"] > token_budget:
-            break
-        selected.append(ch)
-        used += ch["token_count"]
-    return selected if selected else [chunks[0]]
-
-
-def select_random_k_tokens(chunks: List[dict], token_budget: int, seed: int = 42) -> List[dict]:
-    rng = np.random.default_rng(seed)
-    shuffled = list(chunks)
-    rng.shuffle(shuffled)
-
-    selected, used = [], 0
-    for ch in shuffled:
-        if used + ch["token_count"] > token_budget:
-            continue
-        selected.append(ch)
-        used += ch["token_count"]
-
-    if not selected:
-        selected = [min(chunks, key=lambda x: x["token_count"])]
-
-    # restore original order
-    return sorted(selected, key=lambda x: int(x["id"].split("_")[-1]))
-
-
-def select_lead_n_chunks(chunks: List[dict], token_budget: int) -> List[dict]:
-    return select_first_k_tokens(chunks, token_budget)
-
-
-
-# def main():
-#     configs = [
-#         ("cnn_dailymail", 512),
-#         ("govreport", 2048),
-#         ("arxiv", 4096),
-#     ]
-#     salience_types = ["tfidf", "cosine", "hybrid"]
-
-#     results = []
     
-#     for salience_type in salience_types:
-#         for ds, budget in configs:
-#             stats = truncate_dataset(ds, token_budget = budget, salience_type = salience_type)
-#             results.append(stats)
+    print(f"💾 Saved truncated data to: {path}")
+    print(f"   File size: {os.path.getsize(path) / 1024:.1f} KB")
 
-#     ## Save global stats
-#     os.makedirs("results", exist_ok=True)
-#     with open("results/truncation_stats.json", "w", encoding="utf-8") as f:
-#         json.dump(results, f, indent=2)
-#     print("All truncations complete. Stats saved to results/truncation_stats.json")
+def test_truncation():
+    """Test the truncation functions."""
+    print("\n🧪 Testing truncation functions...")
+    
+    # Create test chunks
+    test_chunks = [
+        {"id": "test_0_0", "text": "First chunk of text.", "tokens": 50, "chunk_idx": 0},
+        {"id": "test_0_1", "text": "Second chunk with more content.", "tokens": 70, "chunk_idx": 1},
+        {"id": "test_0_2", "text": "Third chunk that is less important.", "tokens": 60, "chunk_idx": 2},
+        {"id": "test_0_3", "text": "Fourth and final chunk.", "tokens": 40, "chunk_idx": 3},
+    ]
+    
+    # Test scores
+    test_scores = {
+        "test_0_0": 0.8,
+        "test_0_1": 0.9,
+        "test_0_2": 0.3,
+        "test_0_3": 0.6
+    }
+    
+    print(f"\nTest chunks: {len(test_chunks)} chunks, total {sum(c['tokens'] for c in test_chunks)} tokens")
+    
+    # Test salience-based selection
+    selected, tokens, score = select_chunks_by_salience(test_chunks, test_scores, 120)
+    print(f"\nSalience selection (budget=120):")
+    print(f"  Selected {len(selected)} chunks, {tokens} tokens, score={score:.2f}")
+    for chunk in selected:
+        print(f"    - {chunk['id']}: {chunk['tokens']} tokens")
+    
+    # Test first_k selection
+    selected, tokens = select_chunks_first_k(test_chunks, 120)
+    print(f"\nFirst-k selection (budget=120):")
+    print(f"  Selected {len(selected)} chunks, {tokens} tokens")
+    
+    # Test random_k selection
+    selected, tokens = select_chunks_random_k(test_chunks, 120, seed=42)
+    print(f"\nRandom-k selection (budget=120, seed=42):")
+    print(f"  Selected {len(selected)} chunks, {tokens} tokens")
+    
+    return True
 
-
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    # Run tests
+    test_truncation()
+    
+    # Example: Run truncation for CNN with TF-IDF
+    print("\n" + "="*60)
+    print("EXAMPLE: Truncating CNN/DailyMail with TF-IDF salience")
+    print("="*60)
+    
+    try:
+        stats = truncate_dataset(
+            dataset_name="cnn_dailymail",
+            token_budget=512,
+            truncation_method="salience",
+            salience_type="tfidf"
+        )
+        print(f"\nStats: {stats}")
+    except Exception as e:
+        print(f"⚠ Example failed (need data first): {e}")
+        print("\n💡 To run full truncation:")
+        print("   1. Run download_datasets.py")
+        print("   2. Run data_loader.py")
+        print("   3. Run salience_scoring.py")
+        print("   4. Then run truncation.py with your parameters")

@@ -32,3 +32,35 @@ def estimate_cost(tokens_in, tokens_out, model_name):
         (tokens_in / 1e6) * pricing["input"] +
         (tokens_out / 1e6) * pricing["output"]
     )
+
+import pandas as pd
+
+def add_cost_columns(df):
+    """
+    Add cost-related columns to the dataframe based on token counts.
+    Using OpenAI GPT-4 pricing as default:
+    - Input: $10 per 1M tokens
+    - Output: $30 per 1M tokens
+    """
+    # Ensure we have numeric columns
+    if 'avg_tokens_before' not in df.columns or 'avg_tokens_after' not in df.columns:
+        return df
+    
+    # Calculate costs (assuming all tokens are input tokens for simplicity)
+    input_cost_per_token = 10 / 1_000_000  # $10 per 1M tokens
+    output_cost_per_token = 30 / 1_000_000  # $30 per 1M tokens
+    
+    # Calculate costs
+    df['cost_before_usd'] = df['avg_tokens_before'] * input_cost_per_token
+    df['cost_after_usd'] = df['avg_tokens_after'] * input_cost_per_token
+    df['real_cost_savings_usd'] = df['cost_before_usd'] - df['cost_after_usd']
+    df['real_cost_usd'] = df['cost_after_usd']
+    
+    return df
+
+def calculate_cost_savings(original_tokens, reduced_tokens):
+    """Calculate cost savings based on token reduction"""
+    input_cost_per_token = 10 / 1_000_000
+    original_cost = original_tokens * input_cost_per_token
+    reduced_cost = reduced_tokens * input_cost_per_token
+    return original_cost - reduced_cost
