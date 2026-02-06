@@ -25,13 +25,13 @@ PAIRS_DIR = "data/processed/"
 ## CHECKPOINT SETTING: Saving progress every 20 documents
 CHECKPOINT_INTERVAL = 20 
 
-enc = tiktoken.get_encoding("cl100k_base")
+# enc = tiktoken.get_encoding("cl100k_base")
 
 OFFLOAD_DIR = "/content/offload"
 os.makedirs(OFFLOAD_DIR, exist_ok=True)
 
-def estimate_tokens(text: str) -> int:
-    return len(enc.encode(text))
+# def estimate_tokens(text: str) -> int:
+#     return len(enc.encode(text))
 
 def _load_model_with_offload(model_name: str, torch_dtype):
     print(f"Attempting complex load with offload for {model_name}...")
@@ -114,7 +114,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
             summaries.append(o["summary_text"].strip())
     return summaries
 
-def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
+def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None, force: bool = False) -> List[dict]:
     """Summarize records with Checkpointing support."""
     if gen_kwargs is None:
         gen_kwargs = {"max_length": 256, "min_length": 64, "num_beams": 4, "early_stopping": True, "do_sample": False, "no_repeat_ngram_size": 3} 
@@ -131,7 +131,7 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
 
     ## Checking for Existing Progress (Checkpointing)
     results = []
-    if os.path.exists(out_path):
+    if os.path.exists(out_path) and not force:
         try:
             with open(out_path, "r", encoding="utf-8") as f:
                 results = json.load(f)
@@ -139,6 +139,9 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
         except json.JSONDecodeError:
             print("[checkpoint] Existing file was corrupt. Starting from scratch.")
             results = []
+    elif force and os.path.exists(out_path):
+        print(f"[Force] Overwriting existing output: {out_path}")
+        results = []
 
     ## Determine remaining work
     start_index = len(results)
@@ -154,7 +157,9 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
             max_input_tokens=16384
         )
 
-    batch_size = min(batch_size, 2)     ## For LED safety 
+    is_led_model = "led" in model_pipe.model.config._name_or_path.lower() or "long" in model_pipe.model.config._name_or_path.lower()
+    if is_led_model:
+        batch_size = min(batch_size, 2)    ## For LED safety 
 
     print(f"[summarize] Starting processing from index {start_index} to {len(records)}...")
 
@@ -192,10 +197,10 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
     print(f"Saved complete results ({len(results)} summaries) to {out_path}")
     return results
     
-def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None) -> List[dict]:
+def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None, force: bool = False) -> List[dict]:
     """Summarize full pairs with Checkpointing support."""
     if gen_kwargs is None:
-        gen_kwargs = {"max_length": 128, "min_length": 50, "num_beams": 1, "do_sample": False}
+        gen_kwargs = {"max_length": 256, "min_length": 64, "num_beams": 4, "early_stopping": True, "do_sample": False, "no_repeat_ngram_size": 3}
 
     os.makedirs(SUMMARIES_DIR, exist_ok=True)
     if out_name is None:
@@ -207,13 +212,16 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
         pairs = json.load(f)
 
     results = []
-    if os.path.exists(out_path):
+    if os.path.exists(out_path) and not force:
         try:
             with open(out_path, "r", encoding="utf-8") as f:
                 results = json.load(f)
             print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming...")
         except json.JSONDecodeError:
             results = []
+    elif force and os.path.exists(out_path):
+        print(f"[Force] Overwriting existing output: {out_path}")
+        results = []
 
     start_index = len(results)
     if start_index >= len(pairs):

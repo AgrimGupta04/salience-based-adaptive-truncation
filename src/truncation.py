@@ -12,13 +12,29 @@ import numpy as np
 import os
 import json
 from tqdm import tqdm
-import tiktoken
+# import tiktoken
+
+from transformers import AutoTokenizer
 
 DATA_PATH = "data/processed/"
 SALIENCE_PATH = os.path.join(DATA_PATH, "salience_scores/")
 TRUNCATED_PATH = os.path.join(DATA_PATH, "truncated_texts/")
 
-enc = tiktoken.get_encoding("cl100k_base")
+# enc = tiktoken.get_encoding("cl100k_base")
+
+def get_project_tokenizer(dataset_name: str):
+    """
+    Returns the tokenizer matching the model used for summarization.
+    CNN -> BART
+    GovReport/ArXiv -> LED
+    """
+    if "cnn" in dataset_name.lower():
+        # print("[Truncator] Loading BART tokenizer for CNN...")
+        return AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
+    else:
+        # print("[Truncator] Loading LED tokenizer for GovReport/ArXiv...")
+        return AutoTokenizer.from_pretrained("allenai/led-base-16384")
+
 
 def load_salience_scores(dataset_name: str, salience_type: str) -> Dict[str, float]:
     """Read salience scores from JSON and return maping from chunk ID to score.
@@ -38,7 +54,7 @@ def load_salience_scores(dataset_name: str, salience_type: str) -> Dict[str, flo
 
     return {d["id"]: float(d.get("salience_score", 0.0)) for d in salience_data}
 
-def group_chunks_by_document(pairs: List[dict]) -> Dict[str, List[dict]]:
+def group_chunks_by_document(pairs: List[dict], tokenizer) -> Dict[str, List[dict]]:
     """
     Groups chunked text samples (from prepare_data) by their original dicument.
     Expects chunk IDS like '<docid>_<chunkindex>'.
@@ -48,7 +64,7 @@ def group_chunks_by_document(pairs: List[dict]) -> Dict[str, List[dict]]:
     for sample in pairs:
         sample_id = sample["id"]
         doc_id = "_".join(sample_id.split("_")[:-1])  if "_" in sample_id else sample_id
-        token_count = len(enc.encode(sample["text"]))
+        token_count = len(tokenizer.encode(sample["text"], add_special_tokens=False))
         entry = {
             "id": sample_id,
             "doc_id": doc_id,
@@ -148,7 +164,9 @@ def truncate_dataset(dataset_name: str, token_budget: int, truncation_method: st
     print(f"Loaded {len(pairs)} samples from {pairs_path}")
     print(f"[truncate] {dataset_name} | salience={salience_type} | budget={token_budget}")
 
-    groups = group_chunks_by_document(pairs)
+    tokenizer = get_project_tokenizer(dataset_name)
+    groups = group_chunks_by_document(pairs, tokenizer)
+    
     scores = None
     if truncation_method == "salience":
         scores = load_salience_scores(dataset_name, salience_type)

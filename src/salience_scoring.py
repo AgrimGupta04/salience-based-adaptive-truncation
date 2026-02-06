@@ -169,28 +169,28 @@ def save_salience_scores(scores, ids, dataset_name, salience_type, save_dir = "d
 
     print(f"Saved salience scores to {save_path}")
 
-def main():
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    salience_methods = ["tfidf", "cosine", "hybrid"]
+# def main():
+#     model = SentenceTransformer("all-MiniLM-L6-v2")
+#     salience_methods = ["tfidf", "cosine", "hybrid"]
 
-    for ds in tqdm(["cnn_dailymail", "govreport", "arxiv"], desc = "Datasets"):
-        with open(f"data/processed/{ds}_pairs.json", "r", encoding="utf-8") as f:
-            pairs = json.load(f)
+#     for ds in tqdm(["cnn_dailymail", "govreport", "arxiv"], desc = "Datasets"):
+#         with open(f"data/processed/{ds}_pairs.json", "r", encoding="utf-8") as f:
+#             pairs = json.load(f)
             
-        embed_file = os.path.join(EMBEDDING_PATH, f"{ds}_embeddings.npy")
-        if not os.path.exists(embed_file):
-            raise FileNotFoundError(f"Missing embedding file: {embed_file}")
+#         embed_file = os.path.join(EMBEDDING_PATH, f"{ds}_embeddings.npy")
+#         if not os.path.exists(embed_file):
+#             raise FileNotFoundError(f"Missing embedding file: {embed_file}")
         
-        ids = [p["id"] for p in pairs]
+#         ids = [p["id"] for p in pairs]
 
-        for method in salience_methods:
-            scores = compute_salience(
-                pairs,
-                method=method,
-                model=model,
-                embedding_path=embed_file
-            )
-            save_salience_scores(scores, ids, ds, method)
+#         for method in salience_methods:
+#             scores = compute_salience(
+#                 pairs,
+#                 method=method,
+#                 model=model,
+#                 embedding_path=embed_file
+#             )
+#             save_salience_scores(scores, ids, ds, method)
 
-if __name__ == "__main__":
-    main()        
+# if __name__ == "__main__":
+#     main()        

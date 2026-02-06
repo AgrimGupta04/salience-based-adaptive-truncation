@@ -40,11 +40,19 @@ from src.visualization import (
 )
 from src.utils import get_truncated_filename
 
+SHARED_GEN_KWARGS = {
+    "max_length": 256,
+    "min_length": 64,
+    "num_beams": 4, 
+    "early_stopping": True, 
+    "do_sample": False, 
+    "no_repeat_ngram_size": 3
+}
 
 TRUNCATION_METHODS = [
-    # ("salience", "tfidf"),
-    # ("salience", "cosine"),
-    # ("salience", "hybrid"),
+    ("salience", "tfidf"),
+    ("salience", "cosine"),
+    ("salience", "hybrid"),
     ("first_k", None),
     ("random_k", None),
     ("lead_n", None),
@@ -202,7 +210,7 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
 
         pairs_file = f"data/processed/{dataset_name}_pairs.json"
         if os.path.exists(pairs_file):
-            summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, batch_size=32)
+            summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=True)
         else:
             print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
     else:
@@ -216,7 +224,7 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
         salience_type,
         cfg["budget"]
     )
-    truncated_file = f"data/processed/truncated_texts/{truncated_base.replace('.json', '_truncated_summaries.json')}"
+    truncated_file = f"data/processed/truncated_texts/{truncated_base}"
 
     if not os.path.exists(truncated_file):
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
@@ -229,7 +237,9 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
     print(f"[summarize] chosen model for truncated: {chosen_model}")
     trunc_pipe = load_summarization_model(chosen_model)
 
-    summarize_truncated_files(truncated_file, model_pipe=trunc_pipe, batch_size=32)
+    out_name = truncated_base.replace(".json", "_summaries")
+
+    summarize_truncated_files(truncated_file, model_pipe=trunc_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=True, out_name=out_name)
     print(f"[summarize] summaries produced for {dataset_name}")
 
 # ------------------------------
@@ -248,7 +258,7 @@ def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salienc
         salience_type,
         cfg["budget"]
     )
-    trunc_summary_file = f"data/processed/summaries/{truncated_base.replace('.json', '_truncated_summaries.json')}"
+    trunc_summary_file = f"data/processed/summaries/{truncated_base.replace('.json', '_summaries.json')}"
 
 
     candidates = [
