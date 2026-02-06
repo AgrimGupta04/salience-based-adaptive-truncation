@@ -178,10 +178,6 @@ def choose_summarization_model_from_truncated(truncated_json_path: str) -> str:
     # thresholds (tunable)
     if avg_tokens <= 1024:
         return "facebook/bart-large-cnn"
-    if avg_tokens <= 4096:
-        return "google/long-t5-local-base"      ## supports longer input than BART
-    if avg_tokens <= 16384:
-        return "allenai/led-base-16384"
     return "allenai/led-base-16384"
 
 # ------------------------------
@@ -210,7 +206,7 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
 
         pairs_file = f"data/processed/{dataset_name}_pairs.json"
         if os.path.exists(pairs_file):
-            summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=True)
+            summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=False)
         else:
             print(f"[summarize] WARNING: pairs file not found: {pairs_file}")
     else:
