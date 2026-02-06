@@ -105,11 +105,26 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
     for i in iterator:
         batch = texts[i: i + batch_size]
         try:
-            outs = model_pipe(batch, batch_size=batch_size, **gen_kwargs) 
-        except RuntimeError as e:
-            print("GPU OOM — retrying with batch_size=1")
+            outs = model_pipe(batch, batch_size=batch_size, truncation=True, max_length=16384, **gen_kwargs)   
+        except (RuntimeError, IndexError, ValueError) as e:
+            print(f"Batch failed (OOM/IndexError). Retrying with batch_size=1. Error: {e}")
             torch.cuda.empty_cache()
-            outs = [model_pipe(t, **gen_kwargs)[0] for t in batch]
+            outs = []
+            for t in batch:
+                try:
+                    # Retry individually with strict truncation
+                    o = model_pipe(
+                        t, 
+                        truncation=True, 
+                        max_length=16384, 
+                        **gen_kwargs
+                    )[0]
+                    outs.append(o)
+                except Exception as e2:
+                    print(f"SKIPPING RECORD: Input length {len(t)} caused permanent error: {e2}")
+                    # Return empty summary to keep alignment
+                    outs.append({"summary_text": ""})
+                    
         for o in outs:
             summaries.append(o["summary_text"].strip())
     return summaries
