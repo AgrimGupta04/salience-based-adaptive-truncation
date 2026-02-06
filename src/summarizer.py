@@ -68,63 +68,54 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
-    use_offload = "led-" in model_name.lower() or "long-t5" in model_name.lower()
-    
     if "led-" in model_name.lower():
         tokenizer.model_max_length = 16384
 
-    if use_offload:
+    if "led-" in model_name.lower() or "long-t5" in model_name.lower():
         try:
             model = _load_model_with_offload(model_name, torch_dtype=torch_dtype)
             print(f"Loaded {model_name} with device_map='auto' and offload.")
+            pipe = pipeline("summarization", model=model, tokenizer=tokenizer)
         except Exception as e:
-            raise RuntimeError(f"Failed to load long model: {e}. Please use a smaller model.")
+            raise RuntimeError(f"Failed to load long model: {e}")
     else:
         print(f"Loading standard model {model_name} directly to device {device_idx}...")
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True
-        )
-        if device_idx != -1:
-            model.to(torch.device(device_idx))
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=torch_dtype, trust_remote_code=True)
+        if device_idx != -1: model.to(torch.device(device_idx))
         print(f"Loaded {model_name} directly.")
-
-    if use_offload:
-        pipe = pipeline("summarization", model=model, tokenizer=tokenizer)
-    else:
         pipe = pipeline("summarization", model=model, tokenizer=tokenizer, device=device_idx)
+
     return pipe
 
 def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kwargs) -> List[str]:
-    """Summarizes a list of texts (chunks or documents) in batches."""
     summaries = []
     iterator = range(0, len(texts), batch_size)
     
     for i in iterator:
         batch = texts[i: i + batch_size]
         try:
-            outs = model_pipe(batch, batch_size=batch_size, truncation=True, max_length=16384, **gen_kwargs)   
+            outs = model_pipe(
+                batch, 
+                batch_size=batch_size, 
+                truncation=True,        # Prevents OOM by truncating inputs
+                **gen_kwargs            # Sets output max_length (e.g., 512)
+            ) 
         except (RuntimeError, IndexError, ValueError) as e:
             print(f"Batch failed (OOM/IndexError). Retrying with batch_size=1. Error: {e}")
             torch.cuda.empty_cache()
             outs = []
             for t in batch:
                 try:
-                    # Retry individually with strict truncation
                     o = model_pipe(
                         t, 
                         truncation=True, 
-                        max_length=16384, 
                         **gen_kwargs
                     )[0]
                     outs.append(o)
                 except Exception as e2:
                     print(f"SKIPPING RECORD: Input length {len(t)} caused permanent error: {e2}")
-                    # Return empty summary to keep alignment
                     outs.append({"summary_text": ""})
-                    
+
         for o in outs:
             summaries.append(o["summary_text"].strip())
     return summaries
@@ -247,6 +238,8 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
 
     if model_pipe is None:
         model_pipe = load_summarization_model()
+
+    batch_size = 1
 
     print(f"[summarize] Starting processing from index {start_index} to {len(pairs)}...")
 
