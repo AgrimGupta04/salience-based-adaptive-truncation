@@ -41,7 +41,7 @@ from src.visualization import (
 from src.utils import get_truncated_filename
 
 SHARED_GEN_KWARGS = {
-    "max_length": 256,
+    "max_length": 512,
     "min_length": 64,
     "num_beams": 4, 
     "early_stopping": True, 
