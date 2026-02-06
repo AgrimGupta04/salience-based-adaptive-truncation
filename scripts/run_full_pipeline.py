@@ -110,6 +110,18 @@ def run_prepare_data(dataset_name: str, cfg: dict) -> str:
         max_tokens=cfg.get("max_chunk_tokens", 512),
         save_path=f"data/processed/{dataset_name}_pairs.json"
     )
+
+    if not cfg.get("skip_full", False):
+        print(f"[prepare] {dataset_name} —> preparing FULL pairs (no chunking) for baseline")
+        prepare_data(
+            ds,
+            dataset_name=dataset_name,
+            input_field=cfg["input_field"],
+            summary_field=cfg["summary_field"],
+            chunk=False,  ## No chunking for baseline!
+            save_path=f"data/processed/{dataset_name}_full_pairs.json"
+        )
+
     out_path = f"data/processed/{dataset_name}_pairs.json"
     print(f"[prepare] saved {len(pairs)} pairs -> {out_path}")
     return out_path
@@ -204,7 +216,7 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
         print(f"[summarize] baseline model: {baseline_model}")
         baseline_pipe = load_summarization_model(baseline_model)
 
-        pairs_file = f"data/processed/{dataset_name}_pairs.json"
+        pairs_file = f"data/processed/{dataset_name}_full_pairs.json"
         if os.path.exists(pairs_file):
             summarize_full_pairs(pairs_file, model_pipe=baseline_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=False)
         else:

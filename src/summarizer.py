@@ -244,11 +244,16 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
         chunk_summaries = summarize_batch(chunk_texts, model_pipe, batch_size, **gen_kwargs)
 
         for p, gen in zip(chunk_pairs, chunk_summaries):
+            t_in = len(model_pipe.tokenizer.encode(p["text"], truncation=False))
+            t_out = len(model_pipe.tokenizer.encode(gen, truncation=False))
             results.append({
                 "id": p["id"],
                 "text": p["text"],
                 "references": p.get("summary", ""),
-                "generated_summary": gen
+                "generated_summary": gen,
+                "tokens_before": t_in,
+                "tokens_after": t_out,
+                "model_name": model_pipe.model.config._name_or_path
             })
 
         with open(out_path, "w", encoding="utf-8") as f:
