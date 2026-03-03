@@ -76,12 +76,25 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
         tokenizer.truncation_side = "right"
 
     if "led-" in model_name.lower() or "long-t5" in model_name.lower():
-        try:
-            model = _load_model_with_offload(model_name, torch_dtype=torch_dtype)
-            print(f"Loaded {model_name} with device_map='auto' and offload.")
-            pipe = pipeline("summarization", model=model, tokenizer=tokenizer)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load long model: {e}")
+        print(f"Loading {model_name} directly to GPU (no offload)...")
+
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype,
+            trust_remote_code=True
+        )
+
+        if device_idx != -1:
+            model.to(torch.device(device_idx))
+
+        model.eval()
+
+        pipe = pipeline(
+            "summarization",
+            model=model,
+            tokenizer=tokenizer,
+            device=device_idx
+        )
     else:
         print(f"Loading standard model {model_name} directly to device {device_idx}...")
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=torch_dtype, trust_remote_code=True)
