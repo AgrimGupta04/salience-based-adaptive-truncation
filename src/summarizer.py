@@ -86,6 +86,7 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
         print(f"Loading standard model {model_name} directly to device {device_idx}...")
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=torch_dtype, trust_remote_code=True)
         if device_idx != -1: model.to(torch.device(device_idx))
+        model.eval()
         print(f"Loaded {model_name} directly.")
         pipe = pipeline("summarization", model=model, tokenizer=tokenizer, device=device_idx)
 
@@ -104,6 +105,8 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
     model = model_pipe.model
     device = model.device
 
+    model.eval() 
+
     for i in range(0, len(texts), batch_size):
         batch = texts[i: i + batch_size]
         try:
@@ -119,23 +122,25 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
                 global_attention_mask = torch.zeros_like(inputs["input_ids"])
                 global_attention_mask[:, 0] = 1
 
-                summary_ids = model.generate(
-                    inputs["input_ids"],
-                    attention_mask=inputs["attention_mask"],
-                    global_attention_mask=global_attention_mask,
-                    **gen_kwargs
-                )
+                with torch.no_grad():
+                    summary_ids = model.generate(
+                        inputs["input_ids"],
+                        attention_mask=inputs["attention_mask"],
+                        global_attention_mask=global_attention_mask,
+                        **gen_kwargs
+                    )
                 
                 outs = tokenizer.batch_decode(summary_ids, skip_special_tokens=True)
                 summaries.extend(outs)
                 
             else:
-                outs = model_pipe(
-                    batch, 
-                    batch_size=len(batch), 
-                    truncation=True, 
-                    **gen_kwargs
-                )
+                with torch.no_grad(): 
+                    outs = model_pipe(
+                        batch, 
+                        batch_size=len(batch), 
+                        truncation=True, 
+                        **gen_kwargs
+                    )
                 for o in outs:
                     summaries.append(o["summary_text"].strip())
 
@@ -145,21 +150,35 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
             for t in batch:
                 try:
                     if is_led:
-                        inputs = tokenizer(t, return_tensors="pt", truncation=True, max_length=tokenizer.model_max_length).to(device)
+                        inputs = tokenizer(
+                            t,
+                            return_tensors="pt",
+                            truncation=True,
+                            max_length=tokenizer.model_max_length
+                        ).to(device)
+
                         global_attention_mask = torch.zeros_like(inputs["input_ids"])
                         global_attention_mask[:, 0] = 1
                         
-                        summary_ids = model.generate(
-                            inputs["input_ids"],
-                            attention_mask=inputs["attention_mask"],
-                            global_attention_mask=global_attention_mask,
-                            **gen_kwargs
-                        )
+                        with torch.no_grad(): 
+                            summary_ids = model.generate(
+                                inputs["input_ids"],
+                                attention_mask=inputs["attention_mask"],
+                                global_attention_mask=global_attention_mask,
+                                **gen_kwargs
+                            )
+
                         o = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
                         summaries.append(o)
                     else:
-                        o = model_pipe(t, truncation=True, **gen_kwargs)[0]["summary_text"]
+                        with torch.no_grad(): 
+                            o = model_pipe(
+                                t,
+                                truncation=True,
+                                **gen_kwargs
+                            )[0]["summary_text"]
                         summaries.append(o)
+
                 except Exception as e2:
                     print(f"SKIPPING RECORD: Error: {e2}")
                     summaries.append("")
