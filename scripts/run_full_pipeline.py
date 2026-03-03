@@ -51,12 +51,12 @@ SHARED_GEN_KWARGS = {
 }
 
 TRUNCATION_METHODS = [
-    ("salience", "tfidf"),
-    ("salience", "cosine"),
-    ("salience", "hybrid"),
-    ("first_k", None),
-    ("random_k", None),
-    ("lead_n", None),
+    # ("salience", "tfidf"),
+    # ("salience", "cosine"),
+    # ("salience", "hybrid"),
+    # ("first_k", None),
+    # ("random_k", None),
+    # ("lead_n", None),
 ]
 
 # ------------------------------
