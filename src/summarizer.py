@@ -57,7 +57,7 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
         elif max_input_tokens < 8000:
             model_name = "google/pegasus-large"
         else:
-            model_name = "allenai/led-base-16384"
+            model_name = "allenai/led-large-16384-arxiv"
         print(f"Auto-selected model: {model_name}")
 
     if device is None:
@@ -68,8 +68,12 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
     torch_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
+    if "bart" in model_name.lower():
+        tokenizer.model_max_length = 1024
+
     if "led-" in model_name.lower():
         tokenizer.model_max_length = 16384
+        tokenizer.truncation_side = "right"
 
     if "led-" in model_name.lower() or "long-t5" in model_name.lower():
         try:
@@ -88,36 +92,78 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
     return pipe
 
 def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kwargs) -> List[str]:
+    if "max_length" in gen_kwargs and "max_new_tokens" in gen_kwargs:
+        del gen_kwargs["max_length"]
+
     summaries = []
-    iterator = range(0, len(texts), batch_size)
     
-    for i in iterator:
+    # LED model Check 
+    is_led = "led" in model_pipe.model.config._name_or_path.lower()
+    
+    tokenizer = model_pipe.tokenizer
+    model = model_pipe.model
+    device = model.device
+
+    for i in range(0, len(texts), batch_size):
         batch = texts[i: i + batch_size]
         try:
-            outs = model_pipe(
-                batch, 
-                batch_size=batch_size, 
-                truncation=True,        # Prevents OOM by truncating inputs
-                **gen_kwargs            # Sets output max_length (e.g., 512)
-            ) 
+            if is_led:
+                inputs = tokenizer(
+                    batch, 
+                    return_tensors="pt", 
+                    padding=True, 
+                    truncation=True, 
+                    max_length=tokenizer.model_max_length
+                ).to(device)
+
+                global_attention_mask = torch.zeros_like(inputs["input_ids"])
+                global_attention_mask[:, 0] = 1
+
+                summary_ids = model.generate(
+                    inputs["input_ids"],
+                    attention_mask=inputs["attention_mask"],
+                    global_attention_mask=global_attention_mask,
+                    **gen_kwargs
+                )
+                
+                outs = tokenizer.batch_decode(summary_ids, skip_special_tokens=True)
+                summaries.extend(outs)
+                
+            else:
+                outs = model_pipe(
+                    batch, 
+                    batch_size=len(batch), 
+                    truncation=True, 
+                    **gen_kwargs
+                )
+                for o in outs:
+                    summaries.append(o["summary_text"].strip())
+
         except (RuntimeError, IndexError, ValueError) as e:
-            print(f"Batch failed (OOM/IndexError). Retrying with batch_size=1. Error: {e}")
+            print(f"Batch failed (OOM). Retrying one by one. Error: {e}")
             torch.cuda.empty_cache()
-            outs = []
             for t in batch:
                 try:
-                    o = model_pipe(
-                        t, 
-                        truncation=True, 
-                        **gen_kwargs
-                    )[0]
-                    outs.append(o)
+                    if is_led:
+                        inputs = tokenizer(t, return_tensors="pt", truncation=True, max_length=tokenizer.model_max_length).to(device)
+                        global_attention_mask = torch.zeros_like(inputs["input_ids"])
+                        global_attention_mask[:, 0] = 1
+                        
+                        summary_ids = model.generate(
+                            inputs["input_ids"],
+                            attention_mask=inputs["attention_mask"],
+                            global_attention_mask=global_attention_mask,
+                            **gen_kwargs
+                        )
+                        o = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+                        summaries.append(o)
+                    else:
+                        o = model_pipe(t, truncation=True, **gen_kwargs)[0]["summary_text"]
+                        summaries.append(o)
                 except Exception as e2:
-                    print(f"SKIPPING RECORD: Input length {len(t)} caused permanent error: {e2}")
-                    outs.append({"summary_text": ""})
+                    print(f"SKIPPING RECORD: Error: {e2}")
+                    summaries.append("")
 
-        for o in outs:
-            summaries.append(o["summary_text"].strip())
     return summaries
 
 def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] = None, model_pipe = None, batch_size: int = 16, gen_kwargs: Optional[Dict[str, Any]] = None, force: bool = False) -> List[dict]:
@@ -159,13 +205,13 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
     
     if model_pipe is None:
         model_pipe = load_summarization_model(
-            model_name="allenai/led-base-16384",
+            model_name="allenai/led-large-16384-arxiv",
             max_input_tokens=16384
         )
 
     is_led_model = "led" in model_pipe.model.config._name_or_path.lower() or "long" in model_pipe.model.config._name_or_path.lower()
     if is_led_model:
-        batch_size = min(batch_size, 2)    ## For LED safety 
+        batch_size = 4   ## For LED safety 
 
     print(f"[summarize] Starting processing from index {start_index} to {len(records)}...")
 
@@ -239,7 +285,9 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
     if model_pipe is None:
         model_pipe = load_summarization_model()
 
-    batch_size = 1
+    is_led_model = "led" in model_pipe.model.config._name_or_path.lower()
+    if is_led_model:
+        batch_size = 2
 
     print(f"[summarize] Starting processing from index {start_index} to {len(pairs)}...")
 
