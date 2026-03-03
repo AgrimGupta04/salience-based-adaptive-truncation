@@ -41,12 +41,13 @@ from src.visualization import (
 from src.utils import get_truncated_filename
 
 SHARED_GEN_KWARGS = {
-    "max_length": 512,
-    "min_length": 64,
+    "max_new_tokens": 512,
+    "min_length": 150,
     "num_beams": 4, 
     "early_stopping": True, 
     "do_sample": False, 
-    "no_repeat_ngram_size": 3
+    "no_repeat_ngram_size": 3, 
+    "length_penalty": 2.0
 }
 
 TRUNCATION_METHODS = [
@@ -85,7 +86,7 @@ def load_dataset_config() -> Dict[str, dict]:
         },
         "arxiv": {
             "budget": 4096,
-            "model": "allenai/led-base-16384",
+            "model": "allenai/led-large-16384-arxiv",
             "input_field": "article",
             "summary_field": "abstract",
             "max_chunk_tokens": 1024,
@@ -238,7 +239,7 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
         raise FileNotFoundError(f"[summarize] truncated file missing: {truncated_file}")
 
     if dataset_name == "arxiv":
-        chosen_model = "allenai/led-base-16384"
+        chosen_model = "allenai/led-large-16384-arxiv"
     else:
         chosen_model = choose_summarization_model_from_truncated(truncated_file)
 
@@ -247,7 +248,7 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
 
     out_name = truncated_base.replace(".json", "_summaries")
 
-    summarize_truncated_files(truncated_file, model_pipe=trunc_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=True, out_name=out_name)
+    summarize_truncated_files(truncated_file, model_pipe=trunc_pipe, gen_kwargs=SHARED_GEN_KWARGS, batch_size=32, force=False, out_name=out_name)
     print(f"[summarize] summaries produced for {dataset_name}")
 
 # ------------------------------
@@ -270,7 +271,7 @@ def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salienc
 
 
     candidates = [
-        f"data/processed/summaries/{dataset_name}_pairs_full_summaries.json",
+        f"data/processed/summaries/{dataset_name}_full_pairs_full_summaries.json",
         f"data/processed/summaries/{dataset_name}_full_summaries.json",
         full_summary_file
     ]
