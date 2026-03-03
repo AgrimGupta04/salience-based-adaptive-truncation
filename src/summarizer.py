@@ -33,21 +33,6 @@ os.makedirs(OFFLOAD_DIR, exist_ok=True)
 # def estimate_tokens(text: str) -> int:
 #     return len(enc.encode(text))
 
-def _load_model_with_offload(model_name: str, torch_dtype):
-    print(f"Attempting complex load with offload for {model_name}...")
-    try:
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name,
-            torch_dtype=torch_dtype,
-            device_map="auto",
-            offload_folder=OFFLOAD_DIR,
-            offload_state_dict=True,
-            low_cpu_mem_usage=True,
-            trust_remote_code=True,
-        )
-        return model
-    except Exception as e:
-        raise RuntimeError(f"Offload load failed for {model_name}: {e}")
 
 def load_summarization_model(model_name: Optional[str] = None, device: Optional[int] = None, max_input_tokens: int = 2048):
     """Load tokenizer + model and returns a transformer pipeline for summarization."""
