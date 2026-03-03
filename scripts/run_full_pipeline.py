@@ -91,7 +91,7 @@ def load_dataset_config() -> Dict[str, dict]:
             "summary_field": "abstract",
             "max_chunk_tokens": 1024,
             "chunk": True,
-            "skip_full": True,
+            "skip_full": False,
         }
     }
 
