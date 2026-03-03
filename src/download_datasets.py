@@ -21,15 +21,6 @@ DATASETS = {
         "summary_field": "highlights",
         "revision": "main",
     },
-    "xsum": {
-        "hf_name": "xsum",
-        "subset": None,
-        "split": "test",
-        "input_field": "document",
-        "summary_field": "summary",
-        "revision": "main",
-        "verification_mode": "all_checks",
-    },
     "govreport": {
         "hf_name": "ccdv/govreport-summarization",
         "subset": None,
