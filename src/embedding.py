@@ -54,7 +54,7 @@ def build_embedding_index(pairs_file, model, save_dir = "data/processed/embeddin
     ## Save files
     np.save(emb_path, embeddings)
     with open(ids_path, "w", encoding="utf-8") as f:
-        json.dump(ids, f, indent=2)
+        json.dump(ids, f, indent = 2)
 
     print(f"\nSaved embeddings!")
     print(f" - Embedding shape: {embeddings.shape}")

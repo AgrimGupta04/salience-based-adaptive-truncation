@@ -1,6 +1,6 @@
 """
 salience_scoring.py
--------------------
+
 Computes importance (salience) scores for each text chunk using:
 - TF-IDF relevance to summary
 - Cosine similarity (embedding-based)
@@ -33,21 +33,21 @@ def compute_tfidf_salience(pairs, summary_field = "summary") -> List[float]:
 
     texts = [p["text"] for p in pairs]
 
-    # extract document ID (everything except last _chunkindex)
+    ## extract document ID (everything except last _chunkindex)
     doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
 
-    # map doc → summary
+    ## map doc → summary
     doc_to_summary = {}
     for p, doc in zip(pairs, doc_ids):
-        if doc not in doc_to_summary:     # same summary repeated across chunks
+        if doc not in doc_to_summary:     ## same summary repeated across chunks
             doc_to_summary[doc] = p["summary"]
 
     summaries = [doc_to_summary[doc] for doc in doc_ids]
 
     vectorizer = TfidfVectorizer(
-        ngram_range=(1, 2),
-        stop_words="english",
-        max_features=6000
+        ngram_range = (1, 2),
+        stop_words = "english",
+        max_features = 6000
     )
 
     tfidf_text = vectorizer.fit_transform(texts)
@@ -72,7 +72,7 @@ def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
     embeddings = np.load(embedding_path)
 
     ids_path = embedding_path.replace("_embeddings.npy", "_ids.json")
-    with open(ids_path, "r", encoding="utf-8") as f:
+    with open(ids_path, "r", encoding = "utf-8") as f:
         embedding_ids = json.load(f)
 
     pair_ids = [p["id"] for p in pairs]
@@ -134,8 +134,7 @@ def compute_salience(
     alpha: float = 0.7
 ) -> List[float]:
     """
-    Single entry-point for salience computation.
-    This is CRITICAL for clean ablations and paper framing.
+    Entry-point for salience computation.
     """
 
     if method == "tfidf":

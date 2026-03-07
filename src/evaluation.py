@@ -137,17 +137,15 @@ def compute_cost_stats(records: List[dict]) -> Dict[str, float]:
     costs = []
 
     for r in records:
-        if (
-            r.get("tokens_input") is None or
-            r.get("tokens_output") is None or
-            r.get("model_name") is None
-        ):
+        tokens_in = r.get("tokens_input", r.get("tokens_after"))
+            
+        if tokens_in is None:
             continue
 
         cost = estimate_cost(
-            tokens_in=r["tokens_input"],
-            tokens_out=r["tokens_output"],
-            model_name=r["model_name"]
+            tokens_in = tokens_in,
+            tokens_out = 0,
+            model_name = "proxy"
         )
 
         if cost is not None:
@@ -189,7 +187,7 @@ def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, fu
             filtered_preds.append(p)
 
     if len(filtered_refs) == 0:
-        raise ValueError(f"No valid reference–prediction pairs found in {summary_json_path}")
+        raise ValueError(f"No valid reference-prediction pairs found in {summary_json_path}")
 
     rouge_scores = compute_rouge(filtered_refs, filtered_preds)
 
@@ -202,16 +200,24 @@ def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, fu
 
     if full_context_scores is not None:
         if len(full_context_scores["rouge1_list"]) != len(rouge_scores["rouge1_list"]):
-            print("[warn] Full vs truncated length mismatch — skipping significance test")
+            print("Full vs truncated length mismatch -> skipping significance test")
             full_context_scores = None
 
     ## significance testing
     sig_results = {}
-    if full_context_scores is not None and dataset in ["cnn_dailymail", "govreport"]: 
-        sig_results = significance_test_bootstrap(
-            full_context_scores["rouge1_list"],
-            rouge_scores["rouge1_list"],
-        )
+    if full_context_scores is not None and dataset in ["cnn_dailymail", "govreport", "arxiv"]: 
+        min_len = min(len(full_context_scores["rouge1_list"]), len(rouge_scores["rouge1_list"]))
+        if min_len > 0:
+            # Slice both lists to the exact same size
+            aligned_full = full_context_scores["rouge1_list"][:min_len]
+            aligned_trunc = rouge_scores["rouge1_list"][:min_len]
+            
+            sig_results = significance_test_bootstrap(
+                aligned_full,
+                aligned_trunc,
+            )
+        else:
+            print("Warning: One of the score lists is empty.")
 
     return {
         "file": summary_json_path,
@@ -232,7 +238,7 @@ def significance_test_bootstrap(full_scores, trunc_scores, n_samples=1000, seed=
     Args:
         full_scores: list of per-document ROUGE scores for full summaries
         trunc_scores: list of per-document ROUGE scores for truncated summaries
-        n_samples: number of bootstrap resamples (1000–2000 recommended)
+        n_samples: number of bootstrap resamples
 
     Returns:
         dict with:
@@ -308,7 +314,7 @@ def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"
 
     os.makedirs("results", exist_ok = True)
 
-    # Define consistent column order
+    ## Define consistent column order
     FIELD_ORDER = [
         "file",
         "dataset",
@@ -326,7 +332,7 @@ def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"
         "p_value",
     ]
 
-    # Ensure only valid keys included
+    ## Ensure only valid keys included
     row = {k: results.get(k) for k in FIELD_ORDER}
 
     file_exists = os.path.exists(out_path)

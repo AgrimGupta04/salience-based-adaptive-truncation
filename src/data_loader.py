@@ -2,8 +2,6 @@
 Handles loading and preprocessing of datasets stored under data/raw/*.
 Supports:
     - Multiple datasets with different input / summary field shapes
-    - Missing / nested fields (BookSum, Mixed Science)
-    - List-based input (Reddit-TIFU)
     - Optional token-based chunking
 """
 
@@ -11,12 +9,10 @@ from typing import List, Dict, Any
 from datasets import load_from_disk
 from tqdm import tqdm
 import os
-# import tiktoken 
 from transformers import AutoTokenizer
 import nltk
 nltk.download('punkt', quiet=True)
 
-# enc = tiktoken.get_encoding("cl100k_base")
 _TOKENIZERS = {}
 
 DATA_PATH = "data/raw/"
@@ -31,12 +27,6 @@ def get_tokenizer(model_name="facebook/bart-large-cnn"):
 def extract_text(sample: Dict[str, Any], input_field: str) -> str:
     """
     Extracts the document text for a dataset sample.
-
-    Handles:
-        - Missing fields (throws clear error)
-        - list[str] → join (Reddit-TIFU)
-        - nested dict → join values (BookSum)
-        - raw strings → cleaned
     """
     if input_field not in sample:
 
@@ -56,14 +46,6 @@ def extract_text(sample: Dict[str, Any], input_field: str) -> str:
 
     text = sample[input_field]
 
-    # Example: Reddit-TIFU → "documents": [sent1, sent2, ...]
-    if isinstance(text, list):
-        text = " ".join([str(t) for t in text])
-
-    # Example: BookSum → nested dict like {"chapter_text": "..."}
-    if isinstance(text, dict):
-        text = " ".join([str(v) for v in text.values()])
-
     text = str(text)
     text = text.replace("\r", " ").replace("\t", " ").strip()
 
@@ -73,11 +55,6 @@ def extract_text(sample: Dict[str, Any], input_field: str) -> str:
 def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
     """
     Extracts the summary text.
-
-    Handles:
-        - Simple strings
-        - Nested structures: {"summary_text": ...} or {"abstract": ...}
-        - Missing fields → clear error
     """
     if summary_field not in sample:
         aliases = {
@@ -88,7 +65,7 @@ def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
         
         if summary_field in aliases and aliases[summary_field] in sample:
             summary_field = aliases[summary_field]
-        # Generic fallback: ArXiv always has 'abstract'
+        ## Generic fallback: ArXiv always has 'abstract'
         elif "abstract" in sample:
             summary_field = "abstract"
         else:
@@ -132,10 +109,10 @@ def chunk_text(text: str, max_tokens: int = 512, model_name: str = "facebook/bar
     space_tokens = len(tokenizer.encode(" ", add_special_tokens=False))
 
     for sent in sentences:
-        # Count tokens correctly
+        ## Counts tokens correctly
         tokens = len(tokenizer.encode(sent, add_special_tokens=False))
         
-        # Add space overhead if not the first sentence
+        ## Add space overhead if not the first sentence
         added_cost = tokens + (space_tokens if current_chunk else 0)
 
         if token_count + added_cost > max_tokens:
@@ -146,7 +123,7 @@ def chunk_text(text: str, max_tokens: int = 512, model_name: str = "facebook/bar
             token_count += added_cost
 
     if current_chunk:
-        chunks.append(" ".join(current_chunk))  ## To make a final chunk if any sentences remains
+        chunks.append(" ".join(current_chunk))  ## To make a final chunk if any sentences remains i.e last chunk was full with less than a chunk size sent remaining
 
     return chunks
 
@@ -162,14 +139,6 @@ def prepare_data(dataset, dataset_name: str, input_field: str, summary_field: st
         chunk: whether to chunk long documents by token length
         max_tokens: max tokens per chunk (used if chunk=True)
         save_path: optional JSON path to save preprocessed data
-
-        Returns:
-            List of dicts:
-            {
-                "id": "dataset_123_0",
-                "text": "...",
-                "summary": "...",
-            }
       """
     pairs = []
 

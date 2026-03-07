@@ -22,17 +22,12 @@ DEFAULT_MODEL = "facebook/bart-large-cnn"
 SUMMARIES_DIR = "data/processed/summaries/"
 PAIRS_DIR = "data/processed/"
 
-## CHECKPOINT SETTING: Saving progress every 20 documents
+## Saving progress after every 20 documents
 CHECKPOINT_INTERVAL = 20 
 
-# enc = tiktoken.get_encoding("cl100k_base")
 
 OFFLOAD_DIR = "/content/offload"
 os.makedirs(OFFLOAD_DIR, exist_ok=True)
-
-# def estimate_tokens(text: str) -> int:
-#     return len(enc.encode(text))
-
 
 def load_summarization_model(model_name: Optional[str] = None, device: Optional[int] = None, max_input_tokens: int = 2048):
     """Load tokenizer + model and returns a transformer pipeline for summarization."""
@@ -61,12 +56,12 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
         tokenizer.truncation_side = "right"
 
     if "led-" in model_name.lower() or "long-t5" in model_name.lower():
-        print(f"Loading {model_name} directly to GPU (no offload)...")
+        print(f"Loading {model_name} directly to GPU (no offload).")
 
         model = AutoModelForSeq2SeqLM.from_pretrained(
             model_name,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True
+            torch_dtype = torch_dtype,
+            trust_remote_code = True
         )
 
         if device_idx != -1:
@@ -81,7 +76,7 @@ def load_summarization_model(model_name: Optional[str] = None, device: Optional[
             device=device_idx
         )
     else:
-        print(f"Loading standard model {model_name} directly to device {device_idx}...")
+        print(f"Loading standard model {model_name} directly to device {device_idx}.")
         model = AutoModelForSeq2SeqLM.from_pretrained(model_name, torch_dtype=torch_dtype, trust_remote_code=True)
         if device_idx != -1: model.to(torch.device(device_idx))
         model.eval()
@@ -96,7 +91,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
 
     summaries = []
     
-    # LED model Check 
+    ## LED model Check 
     is_led = "led" in model_pipe.model.config._name_or_path.lower()
     
     tokenizer = model_pipe.tokenizer
@@ -120,7 +115,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
                 global_attention_mask = torch.zeros_like(inputs["input_ids"])
                 global_attention_mask[:, 0] = 1
 
-                with torch.no_grad():
+                with torch.no_grad():           ## Used with .eval() thanks to StackOverflow 
                     summary_ids = model.generate(
                         inputs["input_ids"],
                         attention_mask=inputs["attention_mask"],
@@ -143,7 +138,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
                     summaries.append(o["summary_text"].strip())
 
         except (RuntimeError, IndexError, ValueError) as e:
-            print(f"Batch failed (OOM). Retrying one by one. Error: {e}")
+            print(f"Batch failed (OOM). Retrying one by one. Error: {e}")       ## arxiv full baseline not possible on kaggle 
             torch.cuda.empty_cache()
             for t in batch:
                 try:
@@ -178,7 +173,7 @@ def summarize_batch(texts: List[str], model_pipe, batch_size: int = 16, **gen_kw
                         summaries.append(o)
 
                 except Exception as e2:
-                    print(f"SKIPPING RECORD: Error: {e2}")
+                    print(f"Skipping Record: Error: {e2}")
                     summaries.append("")
 
     return summaries
@@ -204,7 +199,7 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
         try:
             with open(out_path, "r", encoding="utf-8") as f:
                 results = json.load(f)
-            print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming...")
+            print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming.")
         except json.JSONDecodeError:
             print("[checkpoint] Existing file was corrupt. Starting from scratch.")
             results = []
@@ -222,8 +217,8 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
     
     if model_pipe is None:
         model_pipe = load_summarization_model(
-            model_name="allenai/led-large-16384-arxiv",
-            max_input_tokens=16384
+            model_name = "allenai/led-large-16384-arxiv",
+            max_input_tokens = 16384
         )
 
     is_led_model = "led" in model_pipe.model.config._name_or_path.lower() or "long" in model_pipe.model.config._name_or_path.lower()
@@ -256,8 +251,8 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
 
             results.append(result)
         
-        ## Saving CHECKPOINT to disk
-        with open(out_path, "w", encoding="utf-8") as f:
+        ## Saving checkpoint to disk
+        with open(out_path, "w", encoding = "utf-8") as f:
             json.dump(results, f, indent=2)
         
         pbar.update(len(chunk_recs))
@@ -285,7 +280,7 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
         try:
             with open(out_path, "r", encoding="utf-8") as f:
                 results = json.load(f)
-            print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming...")
+            print(f"[checkpoint] Found existing file with {len(results)} summaries. Resuming.")
         except json.JSONDecodeError:
             results = []
     elif force and os.path.exists(out_path):
@@ -306,7 +301,7 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
     if is_led_model:
         batch_size = 2
 
-    print(f"[summarize] Starting processing from index {start_index} to {len(pairs)}...")
+    print(f"[summarize] Starting processing from index {start_index} to {len(pairs)}.")
 
     pbar = tqdm(total=len(pairs_to_process), desc="Summarizing Baseline with Checkpoints")
 
@@ -317,6 +312,9 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
         chunk_summaries = summarize_batch(chunk_texts, model_pipe, batch_size, **gen_kwargs)
 
         for p, gen in zip(chunk_pairs, chunk_summaries):
+            ## NOTE: For the full baseline, "tokens_after" is the length of the summary generated (i.e. Output), 
+            ## not the truncated input. Therefore, the resulting reduction percentage measures 
+            ## "Summarization Compression" rather than "Input Truncation Compression" which we have for the truncation methods in the metrics.csv.
             t_in = len(model_pipe.tokenizer.encode(p["text"], truncation=False))
             t_out = len(model_pipe.tokenizer.encode(gen, truncation=False))
             results.append({
@@ -342,9 +340,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--truncated", type = str, help = "Path to truncated JSON to summarize")
-    parser.add_argument("--pairs", type=str, help="Path to full pairs JSON to summarize (baseline)")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--pairs", type = str, help="Path to full pairs JSON to summarize (baseline)")
+    parser.add_argument("--model", type = str, default = DEFAULT_MODEL)
+    parser.add_argument("--batch_size", type = int, default = 16)
     args = parser.parse_args()
 
     pipe = None

@@ -1,6 +1,5 @@
 """
 truncation.py
-----------------
 
 This module turns salience scores inro actual trancated inputs for the summarizer. 
 It's the experimental lever we vary to produce the token-quality tradeoff curves.
@@ -12,7 +11,6 @@ import numpy as np
 import os
 import json
 from tqdm import tqdm
-# import tiktoken
 
 from transformers import AutoTokenizer
 
@@ -20,7 +18,6 @@ DATA_PATH = "data/processed/"
 SALIENCE_PATH = os.path.join(DATA_PATH, "salience_scores/")
 TRUNCATED_PATH = os.path.join(DATA_PATH, "truncated_texts/")
 
-# enc = tiktoken.get_encoding("cl100k_base")
 
 def get_project_tokenizer(dataset_name: str):
     """
@@ -29,17 +26,17 @@ def get_project_tokenizer(dataset_name: str):
     GovReport/ArXiv -> LED
     """
     if "cnn" in dataset_name.lower():
-        # print("[Truncator] Loading BART tokenizer for CNN...")
+        # print("[Truncator] Loading BART tokenizer for CNN.")
         return AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
     else:
-        # print("[Truncator] Loading LED tokenizer for GovReport/ArXiv...")
+        # print("[Truncator] Loading LED tokenizer for GovReport/ArXiv.")
         return AutoTokenizer.from_pretrained("allenai/led-base-16384")
 
 
 def load_salience_scores(dataset_name: str, salience_type: str) -> Dict[str, float]:
     """Read salience scores from JSON and return maping from chunk ID to score.
     
-    1. Load salience scores from {dataset_name}_salience_scores.json.
+    1. Load salience scores from {dataset_name}_{salience_type}_salience.json.
     2. Validate format -> expect list of objects {"id": id, "salience_score": score}.
     3. Returns dictionary {id: float(score)}.
     """
@@ -152,6 +149,7 @@ def truncate_dataset(dataset_name: str, token_budget: int, truncation_method: st
     dataset_name: Name of dataset (e.g., "cnn_dailymail")
     token_budget: Maximum number of tokens allowed after truncation
     salience_type: Salience scoring method used ("tfidf", "cosine", "hybrid")
+    truncation_method: Naive baselines ("first_k", "random_k", "lead_n")
     """
 
     pairs_path = os.path.join(DATA_PATH, f"{dataset_name}_pairs.json")
@@ -247,7 +245,7 @@ def save_truncated(dataset_name: str, truncated_records: List[dict], token_budge
 
 def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
     selected, used = [], 0
-    for ch in chunks:  # already in original order
+    for ch in chunks:  ## already in original order
         if used + ch["token_count"] > token_budget:
             break
         selected.append(ch)
@@ -270,7 +268,7 @@ def select_random_k_tokens(chunks: List[dict], token_budget: int, seed: int = 42
     if not selected:
         selected = [min(chunks, key=lambda x: x["token_count"])]
 
-    # restore original order
+    ## restore original order
     return sorted(selected, key=lambda x: int(x["id"].split("_")[-1]))
 
 

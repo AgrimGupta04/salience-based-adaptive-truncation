@@ -36,7 +36,8 @@ from src.visualization import (
     plot_token_distribution,
     plot_rouge_drop,
     plot_model_selection_histogram,
-    plot_bootstrap_ci
+    plot_bootstrap_ci,
+    plot_cost_at_quality_threshold
 )
 from src.utils import get_truncated_filename
 
@@ -51,12 +52,12 @@ SHARED_GEN_KWARGS = {
 }
 
 TRUNCATION_METHODS = [
-    # ("salience", "tfidf"),
-    # ("salience", "cosine"),
-    # ("salience", "hybrid"),
-    # ("first_k", None),
-    # ("random_k", None),
-    # ("lead_n", None),
+    ("salience", "tfidf"),
+    ("salience", "cosine"),
+    ("salience", "hybrid"),
+    ("first_k", None),
+    ("random_k", None),
+    ("lead_n", None),
 ]
 
 # ------------------------------
@@ -119,7 +120,7 @@ def run_prepare_data(dataset_name: str, cfg: dict) -> str:
             dataset_name=dataset_name,
             input_field=cfg["input_field"],
             summary_field=cfg["summary_field"],
-            chunk=False,  ## No chunking for baseline!
+            chunk=False,  ## No chunking for baseline !!
             save_path=f"data/processed/{dataset_name}_full_pairs.json"
         )
 
@@ -188,7 +189,6 @@ def choose_summarization_model_from_truncated(truncated_json_path: str) -> str:
     avg_tokens = float(np.mean(tokens)) if tokens else 1.0
     print(f"[choose_model] avg tokens_after={avg_tokens:.1f}")
 
-    # thresholds (tunable)
     if avg_tokens <= 1024:
         return "facebook/bart-large-cnn"
     return "allenai/led-base-16384"
@@ -328,6 +328,10 @@ def run_visualization(metrics_csv: str):
     
     plot_model_selection_histogram(
         out_path="results/plots/model_selection.png"
+    )
+
+    plot_cost_at_quality_threshold(
+        df, out_path="results/plots/cost_threshold.png"
     )
 
     for ds in df['dataset_clean'].unique():
