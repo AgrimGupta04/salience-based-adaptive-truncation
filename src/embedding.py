@@ -4,7 +4,7 @@ import os
 import json
 import torch
 
-def load_embedding_model(model_name: str = "all-MiniLM-L6-v2", device: str = None) -> SentenceTransformer:
+def load_embedding_model(model_name: str = "sentence-transformers/multi-qa-mpnet-base-dot-v1", device: str = None) -> SentenceTransformer:
     """
     Loads a SentenceTransformer model with explicit device handling.
     """
@@ -13,6 +13,7 @@ def load_embedding_model(model_name: str = "all-MiniLM-L6-v2", device: str = Non
 
     print(f" Loading embedding model: {model_name} on {device}")
     model = SentenceTransformer(model_name, device=device)
+    model.max_seq_length = 512
     return model
 
 def build_embedding_index(pairs_file, model, save_dir = "data/processed/embeddings", batch_size: int = 32):
@@ -53,7 +54,7 @@ def build_embedding_index(pairs_file, model, save_dir = "data/processed/embeddin
     ## Save files
     np.save(emb_path, embeddings)
     with open(ids_path, "w", encoding="utf-8") as f:
-        json.dump(ids, f, indent=2)
+        json.dump(ids, f, indent = 2)
 
     print(f"\nSaved embeddings!")
     print(f" - Embedding shape: {embeddings.shape}")

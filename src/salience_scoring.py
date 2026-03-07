@@ -1,6 +1,6 @@
 """
 salience_scoring.py
--------------------
+
 Computes importance (salience) scores for each text chunk using:
 - TF-IDF relevance to summary
 - Cosine similarity (embedding-based)
@@ -33,21 +33,21 @@ def compute_tfidf_salience(pairs, summary_field = "summary") -> List[float]:
 
     texts = [p["text"] for p in pairs]
 
-    # extract document ID (everything except last _chunkindex)
+    ## extract document ID (everything except last _chunkindex)
     doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
 
-    # map doc → summary
+    ## map doc → summary
     doc_to_summary = {}
     for p, doc in zip(pairs, doc_ids):
-        if doc not in doc_to_summary:     # same summary repeated across chunks
+        if doc not in doc_to_summary:     ## same summary repeated across chunks
             doc_to_summary[doc] = p["summary"]
 
     summaries = [doc_to_summary[doc] for doc in doc_ids]
 
     vectorizer = TfidfVectorizer(
-        ngram_range=(1, 2),
-        stop_words="english",
-        max_features=6000
+        ngram_range = (1, 2),
+        stop_words = "english",
+        max_features = 6000
     )
 
     tfidf_text = vectorizer.fit_transform(texts)
@@ -70,6 +70,16 @@ def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
     """
 
     embeddings = np.load(embedding_path)
+
+    ids_path = embedding_path.replace("_embeddings.npy", "_ids.json")
+    with open(ids_path, "r", encoding = "utf-8") as f:
+        embedding_ids = json.load(f)
+
+    pair_ids = [p["id"] for p in pairs]
+    assert embedding_ids == pair_ids, (
+        "Embedding pair ID mismatch! "
+        "Embeddings do not align with pairs.json ordering."
+    )
 
     # extract document IDs
     doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
@@ -116,34 +126,70 @@ def compute_hybrid_salience(tfidf_scores, cosine_scores, alpha = 0.7) -> List[fl
 
     return minmax_scale(alpha * np.array(cosine_scores) + (1 - alpha) * np.array(tfidf_scores))
 
-def save_salience_scores(scores, ids, dataset_name, save_dir = "data/processed/salience_scores/"):
+def compute_salience(
+    pairs,
+    method: str,
+    model: SentenceTransformer = None,
+    embedding_path: str = None,
+    alpha: float = 0.7
+) -> List[float]:
+    """
+    Entry-point for salience computation.
+    """
+
+    if method == "tfidf":
+        return compute_tfidf_salience(pairs)
+
+    if method == "cosine":
+        if model is None or embedding_path is None:
+            raise ValueError("Cosine salience requires model and embedding_path")
+        return compute_cosine_salience(pairs, model, embedding_path)
+
+    if method == "hybrid":
+        if model is None or embedding_path is None:
+            raise ValueError("Hybrid salience requires model and embedding_path")
+
+        tfidf = compute_tfidf_salience(pairs)
+        cosine = compute_cosine_salience(pairs, model, embedding_path)
+        return compute_hybrid_salience(tfidf, cosine, alpha)
+
+    raise ValueError(f"Unknown salience method: {method}")
+
+
+def save_salience_scores(scores, ids, dataset_name, salience_type, save_dir = "data/processed/salience_scores/"):
     """Saves salience scores to a JSON file."""
 
     os.makedirs(save_dir, exist_ok = True)
+    
     salience_data = [{"id": id_, "salience_score": float(score)} for id_, score in zip(ids, scores)]
-    save_path = os.path.join(save_dir, f"{dataset_name}_salience_scores.json")
+    save_path = os.path.join(save_dir, f"{dataset_name}_{salience_type}_salience.json")
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(salience_data, f, indent=2)
+
     print(f"Saved salience scores to {save_path}")
 
-def main():
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+# def main():
+#     model = SentenceTransformer("all-MiniLM-L6-v2")
+#     salience_methods = ["tfidf", "cosine", "hybrid"]
 
-    for ds in tqdm(["cnn_dailymail", "govreport", "arxiv"], desc = "Datasets"):
-        with open(f"data/processed/{ds}_pairs.json", "r", encoding="utf-8") as f:
-            pairs = json.load(f)
+#     for ds in tqdm(["cnn_dailymail", "govreport", "arxiv"], desc = "Datasets"):
+#         with open(f"data/processed/{ds}_pairs.json", "r", encoding="utf-8") as f:
+#             pairs = json.load(f)
             
-        tfidf_scores = compute_tfidf_salience(pairs)
-        embed_file = os.path.join(EMBEDDING_PATH, f"{ds}_embeddings.npy")
-        if not os.path.exists(embed_file):
-            raise FileNotFoundError(f"Missing embedding file: {embed_file}")
+#         embed_file = os.path.join(EMBEDDING_PATH, f"{ds}_embeddings.npy")
+#         if not os.path.exists(embed_file):
+#             raise FileNotFoundError(f"Missing embedding file: {embed_file}")
         
-        cosine_scores = compute_cosine_salience(
-            pairs, model, embed_file
-        )
-        hybrid = compute_hybrid_salience(tfidf_scores, cosine_scores)
-        ids = [p["id"] for p in pairs]
-        save_salience_scores(hybrid, ids, ds)
+#         ids = [p["id"] for p in pairs]
 
-if __name__ == "__main__":
-    main()        
+#         for method in salience_methods:
+#             scores = compute_salience(
+#                 pairs,
+#                 method=method,
+#                 model=model,
+#                 embedding_path=embed_file
+#             )
+#             save_salience_scores(scores, ids, ds, method)
+
+# if __name__ == "__main__":
+#     main()        

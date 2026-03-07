@@ -50,9 +50,9 @@ data/
 data/
 data/processed/
 data/raw/
-data/processed/embeddings/
-data/processed/truncated_texts/
-data/processed/summaries/
+# data/processed/embeddings/
+# data/processed/truncated_texts/
+# data/processed/summaries/
 
 # Large model caches
 models/
@@ -70,14 +70,13 @@ transformers_cache/
 #############################
 # Results, plots, outputs
 #############################
-results/
-results/*
+
 !results/README.md
 
 #############################
 # Experiment outputs
 ########
 
-data/
-results/
+
+
 *.arrow

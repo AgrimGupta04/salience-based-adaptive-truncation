@@ -1,6 +1,5 @@
 """
 truncation.py
-----------------
 
 This module turns salience scores inro actual trancated inputs for the summarizer. 
 It's the experimental lever we vary to produce the token-quality tradeoff curves.
@@ -12,33 +11,47 @@ import numpy as np
 import os
 import json
 from tqdm import tqdm
-## from chromadb import PersistentClient
-import tiktoken
+
+from transformers import AutoTokenizer
 
 DATA_PATH = "data/processed/"
 SALIENCE_PATH = os.path.join(DATA_PATH, "salience_scores/")
 TRUNCATED_PATH = os.path.join(DATA_PATH, "truncated_texts/")
 
-enc = tiktoken.get_encoding("cl100k_base")
 
-def load_salience_scores(dataset_name: str) -> Dict[str, float]:
+def get_project_tokenizer(dataset_name: str):
+    """
+    Returns the tokenizer matching the model used for summarization.
+    CNN -> BART
+    GovReport/ArXiv -> LED
+    """
+    if "cnn" in dataset_name.lower():
+        # print("[Truncator] Loading BART tokenizer for CNN.")
+        return AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
+    else:
+        # print("[Truncator] Loading LED tokenizer for GovReport/ArXiv.")
+        return AutoTokenizer.from_pretrained("allenai/led-base-16384")
+
+
+def load_salience_scores(dataset_name: str, salience_type: str) -> Dict[str, float]:
     """Read salience scores from JSON and return maping from chunk ID to score.
     
-    1. Load salience scores from {dataset_name}_salience_scores.json.
+    1. Load salience scores from {dataset_name}_{salience_type}_salience.json.
     2. Validate format -> expect list of objects {"id": id, "salience_score": score}.
     3. Returns dictionary {id: float(score)}.
     """
 
-    path = os.path.join(SALIENCE_PATH, f"{dataset_name}_salience_scores.json")
+    path = os.path.join(SALIENCE_PATH, f"{dataset_name}_{salience_type}_salience.json")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Salience scores for {dataset_name} not found at {path}. Please run salience_scoring.py first.")
     
     with open(path, "r", encoding="utf-8") as f:
         salience_data = json.load(f)
+        assert isinstance(salience_data, list), "Salience file must be a list of dicts"
 
     return {d["id"]: float(d.get("salience_score", 0.0)) for d in salience_data}
 
-def group_chunks_by_document(pairs: List[dict]) -> Dict[str, List[dict]]:
+def group_chunks_by_document(pairs: List[dict], tokenizer) -> Dict[str, List[dict]]:
     """
     Groups chunked text samples (from prepare_data) by their original dicument.
     Expects chunk IDS like '<docid>_<chunkindex>'.
@@ -48,7 +61,7 @@ def group_chunks_by_document(pairs: List[dict]) -> Dict[str, List[dict]]:
     for sample in pairs:
         sample_id = sample["id"]
         doc_id = "_".join(sample_id.split("_")[:-1])  if "_" in sample_id else sample_id
-        token_count = len(enc.encode(sample["text"]))
+        token_count = len(tokenizer.encode(sample["text"], add_special_tokens=False))
         entry = {
             "id": sample_id,
             "doc_id": doc_id,
@@ -103,7 +116,7 @@ def select_top_tokens_by_score(chunks: List[dict], scores: Dict[str, float], tok
         s = scores.get(ch["id"], 0.0)
         tc = ch["token_count"]
         if tc > 0:
-            scored.append((ch, s/tc))
+            scored.append((ch, s/max(tc, 1)))
 
     scored = sorted(scored, key=lambda x: x[1], reverse=True)
 
@@ -115,7 +128,7 @@ def select_top_tokens_by_score(chunks: List[dict], scores: Dict[str, float], tok
         used_tokens += ch["token_count"]
 
     if not selected:
-        selected = [chunks[0]]
+        selected = [min(chunks, key=lambda x: x["token_count"])]  ## Ensure at least one chunk is selected.
 
     selected = sorted(selected, key = lambda x: int(x["id"].split("_")[-1])  if "_" in x["id"] else 0)  ## Restore original order
     return selected
@@ -126,18 +139,17 @@ def assemble_truncated_text(selected_chunks: List[dict]) -> str:
     """
     return "\n\n".join([ch["text"] for ch in selected_chunks])
 
-def truncate_dataset(dataset_name: str, token_budget: int):
+def truncate_dataset(dataset_name: str, token_budget: int, truncation_method: str, salience_type:str | None = None, seed: int = 42):
     """
-    Truncates dataset adaptively using precomputed salience scores.
+    This module converts salience scores into adaptively truncated inputs
+    under a fixed token budget. Chunks are selected greedily to maximize
+    salience per token, producing token quality tradeoff curves.
 
     Args:
-        dataset_name: name of dataset ("cnn_dailymail", etc.)
-        token_budget: "token_budget"
-        use_chroma: if True, uses ChromaDB for top-K retrieval
-        chroma_path: path to persistent ChromaDB (optional)
-
-    Returns:
-        dict of summary statistics
+    dataset_name: Name of dataset (e.g., "cnn_dailymail")
+    token_budget: Maximum number of tokens allowed after truncation
+    salience_type: Salience scoring method used ("tfidf", "cosine", "hybrid")
+    truncation_method: Naive baselines ("first_k", "random_k", "lead_n")
     """
 
     pairs_path = os.path.join(DATA_PATH, f"{dataset_name}_pairs.json")
@@ -148,8 +160,14 @@ def truncate_dataset(dataset_name: str, token_budget: int):
         pairs = json.load(f)
 
     print(f"Loaded {len(pairs)} samples from {pairs_path}")
-    groups = group_chunks_by_document(pairs)
-    scores = load_salience_scores(dataset_name)
+    print(f"[truncate] {dataset_name} | salience={salience_type} | budget={token_budget}")
+
+    tokenizer = get_project_tokenizer(dataset_name)
+    groups = group_chunks_by_document(pairs, tokenizer)
+    
+    scores = None
+    if truncation_method == "salience":
+        scores = load_salience_scores(dataset_name, salience_type)
 
     truncated_records = []
     tokens_before, tokens_after = [], []
@@ -159,9 +177,21 @@ def truncate_dataset(dataset_name: str, token_budget: int):
 
     for doc_id, chunks in tqdm(groups.items(), desc=f"Truncating {dataset_name}"):
 
-        selected = select_top_tokens_by_score(
-            chunks, scores, token_budget
-        )
+        if truncation_method == "salience":
+            selected = select_top_tokens_by_score(chunks, scores, token_budget)
+
+        elif truncation_method == "first_k":
+            selected = select_first_k_tokens(chunks, token_budget)
+
+        elif truncation_method == "random_k":
+            selected = select_random_k_tokens(chunks, token_budget, seed)
+
+        elif truncation_method == "lead_n":
+            selected = select_lead_n_chunks(chunks, token_budget)
+
+        else:
+            raise ValueError(f"Unknown truncation_method: {truncation_method}")
+
         truncated_text = assemble_truncated_text(selected)
 
         rec = {
@@ -171,6 +201,8 @@ def truncate_dataset(dataset_name: str, token_budget: int):
             "tokens_before": sum(c["token_count"] for c in chunks),
             "tokens_after": sum(c["token_count"] for c in selected),
             "kept_chunk_count": len(selected),
+            "salience_type": salience_type if truncation_method == "salience" else truncation_method,
+            "token_budget": token_budget,
         }
 
         truncated_records.append(rec)
@@ -180,49 +212,92 @@ def truncate_dataset(dataset_name: str, token_budget: int):
         processed += 1
         if processed % checkpoint_every == 0:
             print(f"[checkpoint] Saving partial — {processed} docs...")
-            save_truncated(dataset_name, truncated_records, token_budget)
+            save_truncated(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
 
-    save_truncated(dataset_name, truncated_records, token_budget)
+    save_truncated(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
     stats = {
         "dataset": dataset_name,
+        "salience_type": salience_type if truncation_method == "salience" else truncation_method,
         "token_budget": token_budget,
         "avg_tokens_before": float(np.mean(tokens_before)),
         "avg_tokens_after": float(np.mean(tokens_after)),
-        "pct_reduction": 100* (1 - float(np.mean(tokens_after)) / float(np.mean(tokens_before))),
+        "percentage_reduction": 100* (1 - float(np.mean(tokens_after)) / float(np.mean(tokens_before))),
     }
 
-    print(f"[{dataset_name}] Avg tokens reduced by {stats['pct_reduction']:.2f}%")
+    print(f"[{dataset_name}] Avg tokens reduced by {stats['percentage_reduction']:.2f}%")
     return stats
 
-def save_truncated(dataset_name: str, truncated_records: List[dict], token_budget: int):
+def save_truncated(dataset_name: str, truncated_records: List[dict], token_budget: int, truncation_method: str, salience_type:str | None = None):
     """
     Saves truncated dataset to JSON file.
     """
     os.makedirs(TRUNCATED_PATH, exist_ok=True)
-    name = f"{dataset_name}_token_budget_{token_budget}_truncated_summaries.json"
+    if truncation_method == "salience":
+        name = f"{dataset_name}_salience_{salience_type}_budget_{token_budget}.json"
+    else:
+        name = f"{dataset_name}_{truncation_method}_budget_{token_budget}.json"
+
     path = os.path.join(TRUNCATED_PATH, name)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(truncated_records, f, indent=2)
     print(f"Saved truncated dataset to {path}")
 
-def main():
-    configs = [
-        ("cnn_dailymail", 512),
-        ("govreport", 2048),
-        ("arxiv", 4096),
-    ]
 
-    results = []
-    for ds, budget in configs:
-        stats = truncate_dataset(ds, token_budget = budget)
-        results.append(stats)
-
-    ## Save global stats
-    os.makedirs("results", exist_ok=True)
-    with open("results/truncation_stats.json", "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
-    print("All truncations complete. Stats saved to results/truncation_stats.json")
+def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
+    selected, used = [], 0
+    for ch in chunks:  ## already in original order
+        if used + ch["token_count"] > token_budget:
+            break
+        selected.append(ch)
+        used += ch["token_count"]
+    return selected if selected else [chunks[0]]
 
 
-if __name__ == "__main__":
-    main()
+def select_random_k_tokens(chunks: List[dict], token_budget: int, seed: int = 42) -> List[dict]:
+    rng = np.random.default_rng(seed)
+    shuffled = list(chunks)
+    rng.shuffle(shuffled)
+
+    selected, used = [], 0
+    for ch in shuffled:
+        if used + ch["token_count"] > token_budget:
+            continue
+        selected.append(ch)
+        used += ch["token_count"]
+
+    if not selected:
+        selected = [min(chunks, key=lambda x: x["token_count"])]
+
+    ## restore original order
+    return sorted(selected, key=lambda x: int(x["id"].split("_")[-1]))
+
+
+def select_lead_n_chunks(chunks: List[dict], token_budget: int) -> List[dict]:
+    return select_first_k_tokens(chunks, token_budget)
+
+
+
+# def main():
+#     configs = [
+#         ("cnn_dailymail", 512),
+#         ("govreport", 2048),
+#         ("arxiv", 4096),
+#     ]
+#     salience_types = ["tfidf", "cosine", "hybrid"]
+
+#     results = []
+    
+#     for salience_type in salience_types:
+#         for ds, budget in configs:
+#             stats = truncate_dataset(ds, token_budget = budget, salience_type = salience_type)
+#             results.append(stats)
+
+#     ## Save global stats
+#     os.makedirs("results", exist_ok=True)
+#     with open("results/truncation_stats.json", "w", encoding="utf-8") as f:
+#         json.dump(results, f, indent=2)
+#     print("All truncations complete. Stats saved to results/truncation_stats.json")
+
+
+# if __name__ == "__main__":
+#     main()

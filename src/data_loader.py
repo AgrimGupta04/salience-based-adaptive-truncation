@@ -2,8 +2,6 @@
 Handles loading and preprocessing of datasets stored under data/raw/*.
 Supports:
     - Multiple datasets with different input / summary field shapes
-    - Missing / nested fields (BookSum, Mixed Science)
-    - List-based input (Reddit-TIFU)
     - Optional token-based chunking
 """
 
@@ -11,40 +9,42 @@ from typing import List, Dict, Any
 from datasets import load_from_disk
 from tqdm import tqdm
 import os
-import tiktoken 
+from transformers import AutoTokenizer
 import nltk
 nltk.download('punkt', quiet=True)
 
-enc = tiktoken.get_encoding("cl100k_base")
+_TOKENIZERS = {}
 
 DATA_PATH = "data/raw/"
 PROCESSED_PATH = "data/processed/"
 
+def get_tokenizer(model_name="facebook/bart-large-cnn"):
+    if model_name not in _TOKENIZERS:
+        # print(f"[DataLoader] Loading tokenizer: {model_name}")
+        _TOKENIZERS[model_name] = AutoTokenizer.from_pretrained(model_name)
+    return _TOKENIZERS[model_name]
+
 def extract_text(sample: Dict[str, Any], input_field: str) -> str:
     """
     Extracts the document text for a dataset sample.
-
-    Handles:
-        - Missing fields (throws clear error)
-        - list[str] → join (Reddit-TIFU)
-        - nested dict → join values (BookSum)
-        - raw strings → cleaned
     """
     if input_field not in sample:
-        raise KeyError(
-            f"[extract_text] Field '{input_field}' not found in sample.\n"
-            f"Available fields: {list(sample.keys())}"
-        )
+
+        aliases = {
+            "article_text": "article",
+            "text": "article",
+            "document": "text"
+        }
+
+        if input_field in aliases and aliases[input_field] in sample:
+            input_field = aliases[input_field]
+        else:
+            raise KeyError(
+                f"[extract_text] Field '{input_field}' not found in sample.\n"
+                f"Available fields: {list(sample.keys())}"
+            )
 
     text = sample[input_field]
-
-    # Example: Reddit-TIFU → "documents": [sent1, sent2, ...]
-    if isinstance(text, list):
-        text = " ".join([str(t) for t in text])
-
-    # Example: BookSum → nested dict like {"chapter_text": "..."}
-    if isinstance(text, dict):
-        text = " ".join([str(v) for v in text.values()])
 
     text = str(text)
     text = text.replace("\r", " ").replace("\t", " ").strip()
@@ -55,18 +55,25 @@ def extract_text(sample: Dict[str, Any], input_field: str) -> str:
 def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
     """
     Extracts the summary text.
-
-    Handles:
-        - Simple strings
-        - Nested structures: {"summary_text": ...} or {"abstract": ...}
-        - Missing fields → clear error
     """
     if summary_field not in sample:
-        raise KeyError(
-            f"[extract_summary] Summary field '{summary_field}' not found.\n"
-            f"Available fields: {list(sample.keys())}"
-        )
-
+        aliases = {
+            "abstract_text": "abstract",
+            "summary_text": "summary",
+            "highlights": "summary"
+        }
+        
+        if summary_field in aliases and aliases[summary_field] in sample:
+            summary_field = aliases[summary_field]
+        ## Generic fallback: ArXiv always has 'abstract'
+        elif "abstract" in sample:
+            summary_field = "abstract"
+        else:
+            raise KeyError(
+                f"[extract_summary] Summary field '{summary_field}' not found.\n"
+                f"Available fields: {list(sample.keys())}"
+            )
+        
     summary = sample[summary_field]
 
     if isinstance(summary, dict):
@@ -91,23 +98,32 @@ def load_dataset(dataset_name: str):
     print(f"Loaded dataset {dataset_name} from {path}.")
     return ds
 
-def chunk_text(text: str, max_tokens: int = 512) -> List[str]:
+def chunk_text(text: str, max_tokens: int = 512, model_name: str = "facebook/bart-large-cnn") -> List[str]:
     "Splits a long text into roughly equal token-sized chunks."
+
+    tokenizer = get_tokenizer(model_name)
 
     sentences = nltk.sent_tokenize(text)
     chunks, current_chunk, token_count = [], [], 0
 
+    space_tokens = len(tokenizer.encode(" ", add_special_tokens=False))
+
     for sent in sentences:
-        tokens = enc.encode(sent)
-        if token_count + len(tokens) > max_tokens:
+        ## Counts tokens correctly
+        tokens = len(tokenizer.encode(sent, add_special_tokens=False))
+        
+        ## Add space overhead if not the first sentence
+        added_cost = tokens + (space_tokens if current_chunk else 0)
+
+        if token_count + added_cost > max_tokens:
             chunks.append(" ".join(current_chunk))  ## To make a chunk when max tokens exceeded
-            current_chunk, token_count = [sent], len(tokens)    ## Storing the current sent and token count to be used for next chunk check.
+            current_chunk, token_count = [sent], tokens
         else:
             current_chunk.append(sent)
-            token_count += len(tokens)
+            token_count += added_cost
 
     if current_chunk:
-        chunks.append(" ".join(current_chunk))  ## To make a final chunk if any sentences remains
+        chunks.append(" ".join(current_chunk))  ## To make a final chunk if any sentences remains i.e last chunk was full with less than a chunk size sent remaining
 
     return chunks
 
@@ -123,14 +139,6 @@ def prepare_data(dataset, dataset_name: str, input_field: str, summary_field: st
         chunk: whether to chunk long documents by token length
         max_tokens: max tokens per chunk (used if chunk=True)
         save_path: optional JSON path to save preprocessed data
-
-        Returns:
-            List of dicts:
-            {
-                "id": "dataset_123_0",
-                "text": "...",
-                "summary": "...",
-            }
       """
     pairs = []
 
@@ -138,16 +146,16 @@ def prepare_data(dataset, dataset_name: str, input_field: str, summary_field: st
         text = extract_text(sample, input_field)
         summary = extract_summary(sample, summary_field)
 
-        raw_id = (
-            sample["id"]
-            if ("id" in sample and isinstance(sample["id"], str))
-            else f"{dataset_name}_{idx}"
-        )
+        raw_id = f"{dataset_name}_{idx}"
 
         base_id = raw_id.replace("/", "_").replace(" ", "_")
 
         if chunk:       ## Chunking if document too big.
-            chunks = chunk_text(text, max_tokens = max_tokens)
+            if "gov" in dataset_name or "arxiv" in dataset_name:
+                model_name = "allenai/led-base-16384"
+            else:
+                model_name = "facebook/bart-large-cnn"
+            chunks = chunk_text(text, max_tokens = max_tokens, model_name=model_name)
             for i, chunked_text in enumerate(chunks):
                 pairs.append({
                     'id': f"{base_id}_{i}",

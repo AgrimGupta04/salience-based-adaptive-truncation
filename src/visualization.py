@@ -1,346 +1,511 @@
-import os 
-import pandas as pd 
+import os
+import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns 
+import seaborn as sns
 import numpy as np
 import json
-from rouge_score import rouge_scorer
-from src.evaluation import significance_test_bootstrap
+import re
 import glob
+from rouge_score import rouge_scorer
 
+INPUT_COST_PER_1K = 0.01    
 
-def load_metrics_csv(csv_path: str)-> pd.DataFrame:
-    """Loads evaluation metrics CSV into a DataFrame (produced by evaluation.py).
-    
-    Ensures poroper numeric types and automatically extracts dataset and mode info.
+def load_metrics_csv(csv_path: str) -> pd.DataFrame:
     """
-
+    Loads evaluation metrics CSV and cleans dataset names/methods.
+    """
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Metrics CSV not found at {csv_path}. Please run evaluation.py first.")
 
     df = pd.read_csv(csv_path)
 
-    required_cols = [
-        "dataset",
-        "token_budget",
-        "rouge1",
-        "rouge2",
-        "rougeL",
-        "bert_score_f1",
-        "avg_tokens_before",
-        "avg_tokens_after",
-        "percentage_reduction"
-    ]
-
-    missing = set(required_cols) - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing columns in metrics CSV: {missing}")
-
     numeric_cols = [
         "rouge1", "rouge2", "rougeL",
-        "bert_score_f1",
-        "avg_tokens_before", "avg_tokens_after",
-        "percentage_reduction"
+        "avg_tokens_before", 
+        "avg_tokens_after", "percentage_reduction", "token_budget"
     ]
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df["is_full"] = df["token_budget"].isna()
+    ## Parse Dataset and Method from 'dataset' column or filename
+    def get_method(filename):
+        name = str(filename).lower()
+        if 'full_pairs_full_summaries' in name: return 'Full Context'
+        if 'tfidf' in name: return 'tfidf'
+        if 'cosine' in name: return 'cosine'
+        if 'hybrid' in name: return 'hybrid'
+        if 'first_k' in name: return 'first_k'
+        if 'random_k' in name: return 'random_k'
+        if 'lead_n' in name: return 'lead_n'
+        return 'unknown'
+
+    df['dataset_clean'] = df['dataset'] 
+    df['method'] = df['file'].apply(get_method)
+
+    df["is_baseline"] = df["method"].isin(["first_k", "random_k", "lead_n"])
+    df["is_salience"] = df["method"].isin(["tfidf", "cosine", "hybrid", "salience"])
+    df["is_full"] = df["method"] == "Full Context"
+    df["budget_label"] = df["token_budget"].fillna("Full").astype(str)
+
+    ## Since the full context runs don't have a token budget, 
+    ## we set their "after" tokens to be the same as "before" to reflect no truncation.
+    mask_full = df["is_full"]       
+    df.loc[mask_full, "avg_tokens_after"] = df.loc[mask_full, "avg_tokens_before"]
+    df.loc[mask_full, "percentage_reduction"] = 0.0
 
     df["compression_ratio"] = df["avg_tokens_after"] / df["avg_tokens_before"]
-    df["token_budget"] = pd.to_numeric(df["token_budget"], errors="coerce")
 
+    df = add_cost_columns(df)
+    
     return df
 
-def plot_quality_vs_compression(df: pd.DataFrame, out_path: str):
-    """ROUGE VS Compression Ratio Plot.
-    
-    1. Shows how summary quality drops as token count shrinks.
-    2. Each truncation mode (eg. keep_ratio = 0.3, 0.2, 0.1) creates a point on the plot.
-    3. The curve shows the trade-off between quality and compression.
-    """
+def add_cost_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Helper to add estimated cost columns."""
+    df = df.copy()
+    df["estimated_cost"] = (df["avg_tokens_after"] / 1000.0) * INPUT_COST_PER_1K
+    df["estimated_cost_full"] = (df["avg_tokens_before"] / 1000.0) * INPUT_COST_PER_1K
+    return df
 
-    plt.figure(figsize=(10,6))
-    sns.scatterplot(
-        data = df,
+# ========================================================
+# PLOTTING FUNCTIONS
+# ========================================================
+
+def plot_tradeoff_curves_aggregated(df: pd.DataFrame, out_path: str):
+    """
+    ROUGE-L vs Compression Ratio (aggregated across salience methods).
+    """
+    agg = aggregate_by_budget(df)
+    if agg.empty:
+        return
+
+    plt.figure(figsize = (8, 6))
+    sns.lineplot(
+        data = agg,
         x = "compression_ratio",
         y = "rougeL",
-        hue = "dataset",
-        style=df["token_budget"].fillna("full"),
+        hue = "dataset_clean",
         marker = "o"
     )
 
-    plt.title("ROUGE-L vs Compression Ratio")
-    plt.xlabel("Compression Ratio (tokens_after / tokens_before)")
+    plt.xlabel("Compression Ratio (Tokens After / Before)")
     plt.ylabel("ROUGE-L")
-    plt.grid(True, alpha=0.3)
+    plt.title("Quality-Compression Trade-off")
+    plt.grid(alpha=0.3)
+    plt.legend(title="Dataset")
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    print("")
     plt.close()
 
-    print(f"Visualization saved plot: {out_path}")
 
-def plot_rouge_bars(df: pd.DataFrame, out_path: str):
-    """Creates bar plots comparing full context ROUGE-L to truncated ROUGE-L."""
-
-    plt.figure(figsize=(12, 6))
-    sns.barplot(
-        data = df,
-        x = "dataset",
-        y = "rougeL",
-        hue = "token_budget",      ## full = 1.0, truncated < 1.0
-        palette = "viridis"
-    )
-
-    plt.title("ROUGE-L Comparison: Full vs Truncated")
-    plt.xlabel("Dataset")
-    plt.ylabel("ROUGE-L")
-    plt.xticks(rotation=45)
-    plt.grid(True, axis="y", alpha=0.3)
-
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-    print(f"Saved plot: {out_path}")
-
-def plot_token_distribution(df: pd.DataFrame, out_path: str):
+def plot_cost_vs_quality_aggregated(df: pd.DataFrame, out_path: str, metric="rougeL"):
     """
-    Plots histograms of tokens_before and tokens_after across datasets.
-
-    Helps visualize how truncation reduces input length.
+    Cost vs Quality frontier (aggregated).
     """
-    plt.figure(figsize=(12, 6))
-    sns.histplot(
-        df, x="avg_tokens_before",
-        bins=40, kde=True, label="Before", color="blue", alpha=0.5
-    )
-    sns.histplot(
-        df, x="avg_tokens_after",
-        bins=40, kde=True, label="After", color="orange", alpha=0.5
-    )
+    agg = aggregate_by_budget(df)
 
-    plt.title("Token Count Distribution (Before vs After Truncation)")
-    plt.xlabel("Token Count")
-    plt.ylabel("Frequency")
-    plt.legend()
+    plt.figure(figsize = (8, 6))
 
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Visualization saved plot: {out_path}")
-
-def plot_bootstrap_ci(dataset_name: str):
-    """
-    Computes bootstrap confidence intervals for ROUGE-1 F1
-    comparing full-context vs truncated summaries,
-    and plots the CI with mean differences.
-    """
-
-    # Locate summary json files
-    base = f"data/processed/summaries/{dataset_name}"
-    full_file = f"{base}_pairs_full_summaries.json"
-
-    # Find actual truncated filename (because budget may vary)
-    files = glob.glob(f"{base}_token_budget_*_truncated_summaries.json")
-    if len(files) == 0:
-        raise FileNotFoundError("No truncated summaries found for CI bootstrap.")
-    trunc_file = files[0]
-
-    # Load summary records
-    full = json.load(open(full_file, "r"))
-    trunc = json.load(open(trunc_file, "r"))
-
-    # Compute ROUGE per document
-    scorer = rouge_scorer.RougeScorer(["rouge1"], use_stemmer=True)
-    full_scores = []
-    trunc_scores = []
-
-    full = sorted(full, key=lambda x: x["id"])
-    trunc = sorted(trunc, key=lambda x: x["id"])
-
-
-    for f, t in zip(full, trunc):
-        if f["id"] != t["id"]:
-            raise ValueError("ID mismatch between full and truncated summaries")
-        
-        r_full = scorer.score(f["references"], f["generated_summary"])["rouge1"].fmeasure
-        r_trunc = scorer.score(t["references"], t["generated_summary"])["rouge1"].fmeasure
-
-        full_scores.append(r_full)
-        trunc_scores.append(r_trunc)
-
-    # Compute bootstrap significance
-    stats = significance_test_bootstrap(full_scores, trunc_scores)
-
-    # Plot CI
-    plt.figure(figsize=(6, 5))
-    ci_low = stats["ci_low"]
-    ci_high = stats["ci_high"]
-    mean_diff = stats["mean_diff"]
-
-    plt.errorbar(
-        x=[0],
-        y=[mean_diff],
-        yerr=[[mean_diff - ci_low], [ci_high - mean_diff]],
-        fmt="o",
-        capsize=5
-    )
-
-    plt.axhline(0, linestyle="--", color="gray")
-    plt.title(f"ROUGE-1 Bootstrap CI: Full − Truncated ({dataset_name})")
-    plt.ylabel("Mean Difference in ROUGE-1 F1")
-    plt.xticks([])
-
-    out = f"results/{dataset_name}_bootstrap_ci.png"
-    os.makedirs("results", exist_ok=True)
-    plt.savefig(out, dpi=300)
-    plt.close()
-
-    print(f"Visualization Saved bootstrap CI plot -> {out}")
-
-def plot_rouge_drop(df: pd.DataFrame, out_path: str):
-    """Plots the drop in ROUGE scores from full to truncated summaries."""
-
-    pivot = df.pivot_table(
-        index="dataset",
-        columns="token_budget",
-        values="rougeL",
-        aggfunc="mean"
-    )
-
-    num_cols = [c for c in pivot.columns if isinstance(c, (int, float))]
-    if len(num_cols) < 2:
-        raise ValueError(
-            "Need results for at least two token budgets (including full baseline)."
+    ## Full context points
+    full = df[df["is_full"]].groupby("dataset_clean", as_index = False).mean(numeric_only = True)
+    if not full.empty:
+        plt.scatter(
+            full["estimated_cost_full"],
+            full[metric],
+            marker = "*",
+            s= 200,
+            color = "black",
+            label = "Full Context",
+            zorder = 5
         )
 
-    ## Determine full baseline automatically as the highest token budget
-    full_budget = max(num_cols)
-    trunc_budgets = [c for c in num_cols if c != full_budget]
+    if not agg.empty:
+        sns.scatterplot(
+            data = agg,
+            x = "estimated_cost",
+            y = metric,
+            hue = "method",
+            style = "dataset_clean",
+            s = 100,
+            zorder = 4
+        )
 
-    pivot = pivot.reset_index()
+    plt.xlabel("Estimated Input Cost ($)")
+    plt.ylabel(metric)
+    plt.title("Cost Vs Quality Trade-off by Truncation Method")
+    plt.grid(alpha=0.3)
+    plt.legend(bbox_to_anchor = (1.05, 1), loc = "upper left")
 
-    drop_df = pd.concat([
-        pd.DataFrame({
-            "dataset": pivot["dataset"],
-            "token_budget": tb,
-            "rouge_drop": pivot[full_budget] - pivot[tb]
-        })
-        for tb in trunc_budgets
-    ])
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
 
-    plt.figure(figsize=(10, 6))
-    sns.barplot(
-        data=drop_df,
-        x="dataset",
-        y="rouge_drop",
-        hue="token_budget",
-        palette="coolwarm"
+
+def plot_cost_vs_budget_aggregated(df: pd.DataFrame, out_path: str):
+    agg = aggregate_by_budget(df)
+    if agg.empty: return
+
+    agg["budget_cost"] = (agg["token_budget"] / 1000.0) * INPUT_COST_PER_1K
+
+    melted = agg.melt(
+        id_vars = ["dataset_clean", "method"],
+        value_vars = ["budget_cost", "estimated_cost"],
+        var_name = "Cost_Type",
+        value_name = "Cost_USD"
     )
 
-    plt.title("ROUGE-L Drop After Truncation (Full − Truncated)")
-    plt.xlabel("Dataset")
-    plt.ylabel("ROUGE-L Drop")
-    plt.xticks(rotation=45)
-    plt.grid(True, axis="y", alpha=0.3)
+    melted["Cost_Type"] = melted["Cost_Type"].map({
+        "budget_cost": "Max Budget Cost Limit",
+        "estimated_cost": "Actual Inference Cost (Truncated)"
+    })
 
+    plt.figure(figsize = (10, 6))
+    sns.barplot(
+        data = melted,
+        x = "dataset_clean",
+        y = "Cost_USD",
+        hue = "Cost_Type",
+        errorbar = None, 
+        palette = "muted"
+    )
+
+    plt.xlabel("Dataset")
+    plt.ylabel("Inference Cost ($)")
+    plt.title("Inference Cost vs Token Budget")
+    plt.grid(axis = 'y', alpha = 0.3)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok = True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
+
+
+def plot_rouge_drop(df: pd.DataFrame, out_path: str):
+    """Plots ROUGE Drop (Full - Truncated)."""
+    full_avgs = df[df["is_full"]].groupby("dataset_clean")["rougeL"].mean()
+    
+    drop_records = []
+    for _, row in df[~df["is_full"]].iterrows():
+        ds = row["dataset_clean"]
+        if ds in full_avgs.index:
+            drop = full_avgs[ds] - row["rougeL"]
+            drop_records.append({
+                "dataset": ds, "method": row["method"],
+                "token_budget": row["token_budget"], "rouge_drop": drop
+            })
+            
+    if not drop_records: return
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=pd.DataFrame(drop_records), x="dataset", y="rouge_drop", hue="method")
+    plt.title("Performance Drop (Full Context - Truncated)")
+    plt.ylabel("Delta ROUGE-L (Lower is Better)")
+    plt.grid(axis="y", alpha=0.3)
+    
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
+    print(f"[plot] Saved {out_path}")
 
-    print(f"Visualization Saved ROUGE drop plot -> {out_path}")
+def plot_rouge_bars_aggregated(df: pd.DataFrame, out_path: str):
+    bar_df = df.groupby(["dataset_clean", "method"], as_index=False)["rougeL"].mean()
 
-def plot_salience_heatmap(dataset_name: str):
-    """
-    Visualizes average salience score as a function of chunk index.
-    Shows whether salience picks early/middle/late chunks.
-    """
-
-    pairs_file = f"data/processed/{dataset_name}_pairs.json"
-    sal_file = f"data/processed/salience_scores/{dataset_name}_salience_scores.json"
-
-    if not os.path.exists(pairs_file) or not os.path.exists(sal_file):
-        print(f"[heatmap] Missing files for {dataset_name}. Skipping.")
-        return
-
-    pairs = json.load(open(pairs_file))
-    sal = json.load(open(sal_file))
-
-    sal_map = {item["id"]: item["salience_score"] for item in sal}
-
-    ## build mapping: chunk_index → list of salience
-    chunk_positions = {}
-
-    for item in pairs:
-        cid = item["id"]
-        if "_" not in cid:
-            continue  
-        idx = int(cid.split("_")[-1])
-        score = sal_map.get(cid, 0.0)
-        chunk_positions.setdefault(idx, []).append(score)
-
-    ## convert to dataframe for heatmap
-    heat = pd.DataFrame([
-        [pos, np.mean(scores)] for pos, scores in chunk_positions.items()
-    ], columns=["chunk_position", "avg_salience"])
-
-    heat = heat.pivot_table(values="avg_salience", index="chunk_position")
-
-    plt.figure(figsize=(10, 6))
-    sns.heatmap(heat, cmap="viridis")
-
-    plt.title(f"Salience vs Chunk Position — {dataset_name}")
-    plt.xlabel("Chunk Position")
-    plt.ylabel("Average Salience")
-
-    os.makedirs("results/plots", exist_ok=True)
-    plt.savefig(f"results/plots/{dataset_name}_salience_heatmap.png", dpi=300)
-    plt.close()
-
-def plot_model_selection_histogram():
-    """
-    Reads logs from summarizer outputs and checks which model was selected 
-    for truncated summarization.
-    """
-
-    summary_dir = "data/processed/summaries"
-    if not os.path.exists(summary_dir):
-        print("[model_hist] No summaries folder found.")
-        return
-
-    model_counts = {}
-
-    for file in os.listdir(summary_dir):
-        if "truncated" in file and file.endswith(".json"):
-            path = os.path.join(summary_dir, file)
-            data = json.load(open(path))
-
-            ## summarizer.py saves model name at file-level metadata
-            ## If not, fallback to checking first record
-            model_name = data[0].get("model_name", None)
-
-            if model_name is None:
-                continue
-
-            model_counts[model_name] = model_counts.get(model_name, 0) + 1
-
-    if not model_counts:
-        print("[model_hist] No model_name found in summaries.")
-        return
-
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize = (10, 6))
     sns.barplot(
-        x=list(model_counts.keys()),
-        y=list(model_counts.values()),
-        palette="magma"
+        data = bar_df,
+        x = "dataset_clean",
+        y = "rougeL",
+        hue = "method"
     )
 
-    plt.title("Model Auto-Selection Frequency")
-    plt.xticks(rotation=45)
-    plt.ylabel("Number of Datasets/Files Using This Model")
+    plt.title("ROUGE-L Performance: Full Context Vs Truncation Methods")
+    plt.ylabel("ROUGE-L")
+    plt.xlabel("Dataset")
+    plt.grid(axis = 'y', alpha = 0.3)
 
-    os.makedirs("results/plots", exist_ok=True)
-    plt.savefig("results/plots/model_selection_histogram.png", dpi=300)
+    os.makedirs(os.path.dirname(out_path), exist_ok = True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
     plt.close()
+
+def plot_token_distribution(df: pd.DataFrame, out_path: str):
+    """Visualizes distribution of tokens Before vs After truncation."""
+    plt.figure(figsize=(12, 6))
+    trunc = df[~df["is_full"]].copy()
+    
+    if trunc.empty: return
+
+    sns.histplot(trunc["avg_tokens_before"], color = "blue", alpha = 0.4, label="Original Length", kde = True)
+    sns.histplot(trunc["avg_tokens_after"], color = "orange", alpha = 0.6, label="Truncated Length", kde = True)
+
+    plt.title("Token Count Distribution (Before vs After)")
+    plt.xlabel("Number of Tokens")
+    plt.ylabel("Frequency")
+    plt.legend()
+    
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
+    print(f"[plot] Saved {out_path}")
+
+def plot_model_selection_histogram(out_path="results/plots/model_selection.png"):
+    """Scans processed summaries to see which models were auto-selected."""
+    summary_dir = "data/processed/summaries"
+    if not os.path.exists(summary_dir): return
+
+    model_counts = {}
+    files = [f for f in glob.glob(os.path.join(summary_dir, "*_summaries.json")) if 'full_pairs' not in f]
+    
+    for path in files:
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    model = data[0].get("model_name", "Unknown")
+                    model_counts[model] = model_counts.get(model, 0) + 1
+        except Exception:
+            continue
+
+    if not model_counts: return
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x = list(model_counts.keys()), y = list(model_counts.values()), palette = "viridis", legend = False)
+    plt.title("Model Auto-Selection Frequency")
+    plt.ylabel("Count")
+    
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
+    print(f"[plot] Saved {out_path}")
+
+def aggregate_by_budget(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregates truncated runs by dataset and token budget.
+    Salience methods are averaged out.
+    """
+    trunc = df[(~df["is_full"]) & (df["is_salience"])].copy()
+
+    grouped = trunc.groupby(
+        ["dataset_clean", "method", "token_budget"],
+        as_index=False
+    ).agg({
+        "rougeL": "mean",
+        "rouge1": "mean",
+        "compression_ratio": "mean",
+        "estimated_cost": "mean",
+        "avg_tokens_after": "mean"
+    })
+
+    return grouped
+
+def plot_bootstrap_ci(dataset_name: str, n_rounds: int = 1000):
+    """
+    Computes and plots 95% Bootstrap Confidence Intervals for all methods side-by-side.
+    """
+    base_dir = "data/processed/summaries"
+    
+    full_pattern = os.path.join(base_dir, f"*{dataset_name}*full_pairs_full_summaries.json")
+    full_files = glob.glob(full_pattern)
+    
+    if not full_files:
+        print(f"[CI Plot] Missing full baseline for {dataset_name}. Skipping.")
+        return
+    full_path = full_files[0]
+
+    ## Target all truncated methods
+    trunc_pattern = os.path.join(base_dir, f"*{dataset_name}*_budget_*_summaries.json")
+    trunc_files = glob.glob(trunc_pattern)
+    
+    if not trunc_files:
+        print(f"[CI Plot] No truncated files found for {dataset_name}.")
+        return
+
+    print(f"[CI Plot] Processing multiple methods for {dataset_name}...")
+
+    ## Load Baseline Data
+    full_data = {}
+    try:
+        with open(full_path, 'r') as f:
+            raw_full = json.load(f)
+        for item in raw_full:
+            full_data[item['id']] = item
+    except Exception as e:
+        print(f"[CI Plot] Error loading full JSON: {e}")
+        return
+
+    scorer = rouge_scorer.RougeScorer(['rouge1'], use_stemmer=True)
+    results = []
+
+    ## Iterate over all truncation methods found in the directory
+    for trunc_path in trunc_files:
+        filename = os.path.basename(trunc_path)
+        
+        # Determine Method Name for the chart label
+        if 'tfidf' in filename: method_name = 'TF-IDF'
+        elif 'cosine' in filename: method_name = 'Cosine'
+        elif 'hybrid' in filename: method_name = 'Hybrid'
+        elif 'first_k' in filename: method_name = 'First-k'
+        elif 'random_k' in filename: method_name = 'Random-k'
+        elif 'lead_n' in filename: method_name = 'Lead-n'
+        else: continue
+
+        try:
+            with open(trunc_path, 'r') as f:
+                trunc_data = {item['id']: item for item in json.load(f)}
+        except Exception:
+            continue
+
+        ## Handle ID Mismatches
+        common_ids = set(full_data.keys()) & set(trunc_data.keys())
+        if not common_ids:
+            normalized_full = {}
+            for k, v in full_data.items():
+                if "_" in k: normalized_full[k.rsplit('_', 1)[0]] = v
+            full_data_to_use = normalized_full
+            common_ids = set(full_data_to_use.keys()) & set(trunc_data.keys())
+        else:
+            full_data_to_use = full_data
+
+        if not common_ids:
+            continue
+
+        ## Compute ROUGE differences
+        differences = []
+        for doc_id in common_ids:
+            f_rec = full_data_to_use[doc_id]
+            t_rec = trunc_data[doc_id]
+            
+            ref = f_rec['references'][0] if isinstance(f_rec['references'], list) else f_rec['references']
+            
+            s_full = scorer.score(ref, f_rec['generated_summary'])['rouge1'].fmeasure
+            s_trunc = scorer.score(ref, t_rec['generated_summary'])['rouge1'].fmeasure
+            
+            differences.append(s_full - s_trunc)
+
+        differences = np.array(differences)
+        if len(differences) < 2: continue
+
+        ## Bootstrap
+        means = []
+        for _ in range(n_rounds):
+            sample = np.random.choice(differences, size = len(differences), replace = True)
+            means.append(np.mean(sample))
+        
+        ci_low = np.percentile(means, 2.5)
+        ci_high = np.percentile(means, 97.5)
+        mean_diff = np.mean(differences)
+
+        results.append({
+            'method': method_name,
+            'mean_diff': mean_diff,
+            'ci_low': ci_low,
+            'ci_high': ci_high
+        })
+
+    if not results:
+        return
+
+    ## Plot the aggregated CI comparison
+    plt.figure(figsize=(8, 6))
+    methods = [r['method'] for r in results]
+    means = [r['mean_diff'] for r in results]
+    
+    ## Error bar format: [ [distances below mean], [distances above mean] ]
+    yerr = [
+        [r['mean_diff'] - r['ci_low'] for r in results], 
+        [r['ci_high'] - r['mean_diff'] for r in results]
+    ]
+
+    plt.errorbar(x = methods, y = means, yerr = yerr, fmt = 'o', color = 'black', capsize = 8, markersize = 8)
+    
+    ## Adding a red dashed line at 0
+    plt.axhline(0, linestyle='--', color='red', alpha = 0.5, label = 'Baseline Quality (No Drop)')
+    
+    plt.ylabel("ROUGE-1 Drop (Full - Truncated) -> Lower is Better")
+    plt.title(f"95% CI of Quality Drop by Compression Method\n({dataset_name})")
+    plt.grid(axis = 'y', alpha = 0.2)
+    plt.legend()
+
+    out_path = f"results/plots/{dataset_name}_bootstrap_ci_comparison.png"
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
+    print(f"[CI Plot] Saved {out_path}")
+
+    ## Plot the aggregated CI comparison
+    plt.figure(figsize=(8, 6))
+    methods = [r['method'] for r in results]
+    means = [r['mean_diff'] for r in results]
+    
+    ## Error bar format: [ [distances below mean], [distances above mean] ]
+    yerr = [
+        [r['mean_diff'] - r['ci_low'] for r in results], 
+        [r['ci_high'] - r['mean_diff'] for r in results]
+    ]
+
+    plt.errorbar(x = methods, y = means, yerr = yerr, fmt = 'o', color = 'black', capsize = 8, markersize = 8)
+    
+    ## Adding a red dashed line at 0 
+    plt.axhline(0, linestyle='--', color='red', alpha=0.5, label='Baseline Quality (No Drop)')
+    
+    plt.ylabel("ROUGE-1 Drop (Full - Truncated) -> Lower is Better")
+    plt.title(f"95% CI of Quality Drop by Compression Method\n({dataset_name})")
+    plt.grid(axis = 'y', alpha = 0.2)
+    plt.legend()
+
+    out_path = f"results/plots/{dataset_name}_bootstrap_ci_comparison.png"
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
+    print(f"[CI Plot] Saved {out_path}")
+
+def plot_quality_vs_cost(df, out_path, metric="rougeL"):
+    trunc = df[~df["is_full"]]
+
+    plt.figure(figsize = (8, 6))
+    sns.scatterplot(
+        data = trunc,
+        x = "estimated_cost",
+        y = metric,
+        hue = "method",
+        style = "dataset_clean",
+        s = 100
+    )
+    plt.xlabel("Average Cost (USD)")
+    plt.ylabel(metric)
+    plt.title("Quality vs Real Inference Cost")
+    plt.grid(alpha=0.3)
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+def plot_cost_at_quality_threshold(df, out_path="results/plots/cost_threshold.png", threshold=0.95):
+    records = []
+
+    for ds in df["dataset_clean"].unique():
+        full_score = df[(df["dataset_clean"] == ds) & (df["is_full"])]["rougeL"].mean()
+        cutoff = threshold * full_score
+
+        for method in df["method"].unique():
+            subset = df[
+                (df["dataset_clean"] == ds) &
+                (df["method"] == method) &
+                (df["rougeL"] >= cutoff)
+            ]
+            if not subset.empty:
+                records.append({
+                    "dataset": ds,
+                    "method": method,
+                    "min_cost_usd": subset["estimated_cost"].min()
+                })
+
+    result_df = pd.DataFrame(records)
+    if result_df.empty: return result_df
+    
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data = result_df, x = "dataset", y = "min_cost_usd", hue = "method")
+    plt.title(f"Minimum Inference Cost to Achieve {threshold*100}% of Baseline Quality")
+    plt.ylabel("Minimum Cost (USD)")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
+    plt.close()
+    return result_df

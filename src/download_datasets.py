@@ -1,10 +1,9 @@
 """
 download_datasets.py
 
-Downloads and saves summarization datasets (CNN/DailyMail, XSum, GovReport)
+Downloads and saves summarization datasets (CNN/DailyMail, GovReport, ArXiv)
 for Salience-based Adaptive Truncation experiments.
 
-Author: Agrim Gupta
 """
 
 import os
@@ -20,15 +19,6 @@ DATASETS = {
         "input_field": "article",
         "summary_field": "highlights",
         "revision": "main",
-    },
-    "xsum": {
-        "hf_name": "xsum",
-        "subset": None,
-        "split": "test",
-        "input_field": "document",
-        "summary_field": "summary",
-        "revision": "main",
-        "verification_mode": "all_checks",
     },
     "govreport": {
         "hf_name": "ccdv/govreport-summarization",
@@ -59,7 +49,7 @@ os.makedirs("data/raw", exist_ok=True)
 def estimate_avg_length(dataset, field, n_samples=200):
     """Estimate average token count for the input field."""
     total = 0
-    # Select a small range to estimate length without processing the whole dataset
+    ## Selecting a small range to estimate length without processing the whole dataset
     for i, sample in enumerate(dataset.select(range(min(len(dataset), n_samples)))):
         total += len(enc.encode(sample[field]))
     return total / n_samples
@@ -71,7 +61,7 @@ def download_and_save(name, config):
         print(f" {name} already downloaded. Skipping.")
         return load_from_disk(local_path)
 
-    # Retrieve configuration parameters
+    ## Retrieving configuration parameters
     hf_name = config["hf_name"]
     subset = config.get("subset", None)
     split = config.get("split", "train")
@@ -81,8 +71,7 @@ def download_and_save(name, config):
 
     print(f"\n  Downloading {name} dataset.")
     try:
-        # We use a unified call, passing None for parameters that aren't set.
-        # This handles both cnn_dailymail (needs subset) and xsum (needs trust_remote_code).
+        ## We use a unified call, passing None for parameters that aren't set.
         ds = load_dataset(
             hf_name, 
             subset, 
@@ -101,9 +90,9 @@ def download_and_save(name, config):
             summary_field = config.get("summary_field")
             
             if input_field and input_field in sample:
-                print(f" Example Input: {sample[input_field][:150]}...")
+                print(f" Example Input: {sample[input_field][:150]}.")
             if summary_field and summary_field in sample:
-                print(f" Reference Summary: {sample[summary_field][:150]}...")
+                print(f" Reference Summary: {sample[summary_field][:150]}.")
         except Exception:
             pass
 
@@ -116,8 +105,7 @@ def download_and_save(name, config):
 
         return ds
 
-    except Exception as e:
-        # Clearer debug message
+    except Exception as e:      #3 Incase of failure due to hugginggface version
         print(f" Failed to download {name}: {e}")
         print("-> If you are using datasets 2.11.0, the Invalid pattern: '**' bug may require updating fsspec/huggingface_hub.")
         print("Please try running: pip install -U fsspec huggingface_hub")
@@ -125,12 +113,12 @@ def download_and_save(name, config):
 
 
 def main():
-    print(" Starting dataset downloads for summarization experiments.\n")
+    print("Starting dataset downloads for summarization experiments.\n")
     for name, cfg in DATASETS.items():
         try:
             out = download_and_save(name, cfg)
             if out is None:
-                print(f"  Warning: {name} failed to download (see message). Continuing to next dataset.")
+                print(f"Warning: {name} failed to download (see message). Continuing to next dataset.")
         except Exception as e:
             print(f" Failed to download {name}: {e}")
 

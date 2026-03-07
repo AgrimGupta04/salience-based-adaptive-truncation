@@ -15,7 +15,7 @@ huggingface-hub>=0.11.1
 
 # Vector stores & retrieval
 chromadb>=0.5.3
-faiss-cpu>=1.8.0  # optional, for large-scale indexing
+faiss-cpu>=1.8.0 
 
 # Evaluation metrics
 rouge-score>=0.1.2
@@ -32,7 +32,7 @@ scikit-learn>=1.5.0
 langchain>=0.4.0
 langchain-community>=0.4.0
 
-# Optional: model serving / APIs (if you plan to expose demos)
+# Model serving / APIs
 fastapi>=0.110.0
 uvicorn>=0.29.0
 
