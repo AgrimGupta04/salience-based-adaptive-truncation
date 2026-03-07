@@ -1,5 +1,5 @@
 def estimate_cost(tokens_in, tokens_out, model_name = "proxy"):
-    if tokens_in in None:
+    if tokens_in is None:
         return None
 
     return (
