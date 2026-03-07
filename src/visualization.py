@@ -8,7 +8,7 @@ import re
 import glob
 from rouge_score import rouge_scorer
 
-INPUT_COST_PER_1K = 0.01    ## e.g., $0.01 / 1K input tokens
+INPUT_COST_PER_1K = 0.01    
 
 def load_metrics_csv(csv_path: str) -> pd.DataFrame:
     """
@@ -21,7 +21,7 @@ def load_metrics_csv(csv_path: str) -> pd.DataFrame:
 
     numeric_cols = [
         "rouge1", "rouge2", "rougeL",
-        "bert_score_f1", "avg_tokens_before", 
+        "avg_tokens_before", 
         "avg_tokens_after", "percentage_reduction", "token_budget"
     ]
     for col in numeric_cols:
@@ -291,7 +291,6 @@ def aggregate_by_budget(df: pd.DataFrame) -> pd.DataFrame:
     ).agg({
         "rougeL": "mean",
         "rouge1": "mean",
-        "bert_score_f1": "mean",
         "compression_ratio": "mean",
         "estimated_cost": "mean",
         "avg_tokens_after": "mean"
