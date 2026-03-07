@@ -85,15 +85,18 @@ def compute_token_stats(records: List[dict]) -> Dict[str, float]:
         "percentage_reduction": 100 * (1 - np.mean(after) / np.mean(before))
     }
 
-def compute_cost_stats(records: List[dict]) -> Dict[str, float]:
+def compute_cost_stats(records: List[dict], is_baseline: bool = False) -> Dict[str, float]:
     """
     Computes average and total USD cost using model-aware pricing.
     """
     costs = []
 
     for r in records:
-        tokens_in = r.get("tokens_input", r.get("tokens_after"))
-        
+        if is_baseline:
+            tokens_in = r.get("tokens_input", r.get("tokens_before"))
+        else:
+            tokens_in = r.get("tokens_input", r.get("tokens_after"))
+
         if tokens_in is None:
             continue
 
@@ -125,7 +128,9 @@ def evaluate_summary_file(summary_json_path: str, full_context_scores: Dict[str,
 
         rouge_scores = compute_rouge(filtered_refs, filtered_preds)
         token_stats = compute_token_stats(loaded["records"])
-        cost_stats = compute_cost_stats(loaded["records"])
+
+        is_baseline = (salience_type == "None" or "full_pairs" in summary_json_path)
+        cost_stats = compute_cost_stats(loaded["records"], is_baseline=is_baseline)
 
         ## significance testing with length alignment
         sig_results = {}

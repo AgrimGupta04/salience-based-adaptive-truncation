@@ -276,18 +276,19 @@ def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salienc
         full_summary_file
     ]
     full_file = next((p for p in candidates if os.path.exists(p)), None)
-    if skip_full:
-        print(f"[evaluate] skipping baseline evaluation for {dataset_name}")
-    elif full_file is None:
-        print(f"[evaluate] WARNING: full summary file not found for {dataset_name}; skipping baseline evaluation")
-    else:
+
+    full_context_scores = None
+    if skip_full and full_file:
+        from src.evaluation import load_full_context_scores
+        full_context_scores = load_full_context_scores(full_file)
+        
         res_full = evaluate_summary_file(full_file)
         save_evaluation_results(res_full)
 
     if not os.path.exists(trunc_summary_file):
         print(f"[evaluate] WARNING: truncated summary file not found: {trunc_summary_file}")
     else:
-        res_trunc = evaluate_summary_file(trunc_summary_file)
+        res_trunc = evaluate_summary_file(trunc_summary_file, full_context_scores=full_context_scores)
         save_evaluation_results(res_trunc)
 
 # ------------------------------
