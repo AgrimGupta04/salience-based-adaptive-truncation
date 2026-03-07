@@ -70,8 +70,7 @@ transformers_cache/
 #############################
 # Results, plots, outputs
 #############################
-results/
-results/*
+
 !results/README.md
 
 #############################
@@ -79,5 +78,5 @@ results/*
 ########
 
 
-results/
+
 *.arrow
