@@ -10,8 +10,6 @@ from typing import List, Dict, Optional, Any
 from tqdm import tqdm
 
 import warnings
-import tiktoken
-import huggingface_hub
 
 ## Suppress warnings
 warnings.filterwarnings("ignore", message="Both `max_new_tokens` \\(=.*\\) and `max_length` \\(=.*\\) seem to have been set")
@@ -26,7 +24,7 @@ PAIRS_DIR = "data/processed/"
 CHECKPOINT_INTERVAL = 20 
 
 
-OFFLOAD_DIR = "/content/offload"
+OFFLOAD_DIR = os.environ.get("OFFLOAD_DIR", "tmp/offload")
 os.makedirs(OFFLOAD_DIR, exist_ok=True)
 
 def load_summarization_model(model_name: Optional[str] = None, device: Optional[int] = None, max_input_tokens: int = 2048):
@@ -243,7 +241,8 @@ def summarize_truncated_files(truncated_json_path: str, out_name: Optional[str] 
                 "generated_summary": gen,
                 "tokens_before": rec.get("tokens_before"),
                 "tokens_after": rec.get("tokens_after"),
-                "model_name": model_pipe.model.config._name_or_path
+                "model_name": model_pipe.model.config._name_or_path,
+                "routing_model": model_pipe.model.config._name_or_path
             }
             
             assert result["references"].strip() != "", \
@@ -324,7 +323,8 @@ def summarize_full_pairs(pairs_file: str, out_name: Optional[str] = None, model_
                 "generated_summary": gen,
                 "tokens_before": t_in,
                 "tokens_after": t_out,
-                "model_name": model_pipe.model.config._name_or_path
+                "model_name": model_pipe.model.config._name_or_path,
+                "routing_model": model_pipe.model.config._name_or_path
             })
 
         with open(out_path, "w", encoding="utf-8") as f:

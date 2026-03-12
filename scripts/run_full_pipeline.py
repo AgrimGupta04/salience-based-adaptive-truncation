@@ -9,15 +9,14 @@ import sys
 import json 
 import numpy as np
 from typing import Dict
+import csv
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data_loader import prepare_data, load_dataset
 from src.embedding import load_embedding_model, build_embedding_index
 from src.salience_scoring import (
-    compute_tfidf_salience,
-    compute_cosine_salience,
-    compute_hybrid_salience,
+    compute_salience_with_timing,
     save_salience_scores,
 )
 from src.truncation import truncate_dataset
@@ -59,6 +58,13 @@ TRUNCATION_METHODS = [
     ("random_k", None),
     ("lead_n", None),
 ]
+
+MODEL_COST_PER_1K = {
+    "facebook/bart-large-cnn": 0.0005,
+    "allenai/led-base-16384": 0.001,
+    "allenai/led-large-16384-arxiv": 0.002,
+    "proxy": 0.01
+}
 
 # ------------------------------
 # 1. Dataset configuration
@@ -135,7 +141,7 @@ def run_build_embeddings(pairs_file: str, dataset_name: str):
     print(f"\n[embeddings] building embeddings for {dataset_name}")
     emb_model = load_embedding_model()
     emb, ids = build_embedding_index(pairs_file, emb_model, save_dir="data/processed/embeddings")
-    print(f"[embeddings] saved embeddings shape {getattr(emb, 'shape', 'n/a')}")
+    print(f"[embeddings] saved embeddings to {emb}")
     return emb, ids
 
 # ------------------------------
@@ -151,20 +157,34 @@ def run_salience_scoring(dataset_name: str, salience_type: str):
     emb_path = f"data/processed/embeddings/{dataset_name}_embeddings.npy"
     emb_model = load_embedding_model()
 
-    if salience_type == "tfidf":
-        scores = compute_tfidf_salience(pairs)
-    elif salience_type == "cosine":
-        scores = compute_cosine_salience(pairs, emb_model, emb_path)
-    elif salience_type == "hybrid":
-        tfidf = compute_tfidf_salience(pairs)
-        cosine = compute_cosine_salience(pairs, emb_model, emb_path)
-        scores = compute_hybrid_salience(tfidf, cosine)
-    else:
-        raise ValueError(f"Unknown salience_type: {salience_type}")
+    scores, timing = compute_salience_with_timing(
+        pairs=pairs,
+        method=salience_type,
+        model=emb_model,
+        embedding_path=emb_path,
+        alpha=0.7   # NOW EXPLICIT — was hidden default before
+    )
+
+    # Save timing to a separate CSV for paper reporting
+    timing["dataset"] = dataset_name
+    _append_timing_record(timing)
 
     ids = [p["id"] for p in pairs]
     save_salience_scores(scores, ids, dataset_name, salience_type)
-    print(f"[salience] saved salience scores for {dataset_name}")
+
+
+def _append_timing_record(timing: dict):
+    """Appends one timing row to results/salience_timing.csv"""
+    os.makedirs("results", exist_ok=True)
+    path = "results/salience_timing.csv"
+    fields = ["dataset", "method", "total_sec", "per_doc_sec", "n_docs", "n_chunks"]
+    file_exists = os.path.exists(path)
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({k: timing.get(k) for k in fields})
+    print(f"[timing] saved to {path}")
 
 # ------------------------------
 # Helper: choose summarizer based on truncated tokens
@@ -254,42 +274,43 @@ def run_summarization(dataset_name: str, cfg: dict, truncation_method: str, sali
 # ------------------------------
 # 7. Evaluation
 # ------------------------------
-def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salience_type: str):
+def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salience_type: str, evaluated_baselines: set):
     print(f"\n[evaluate] computing metrics for {dataset_name}")
-
-    skip_full = cfg.get("skip_full", False)
-
-    ## expected summary filenames created by summarizer functions
-    full_summary_file = f"data/processed/summaries/{os.path.basename(f'{dataset_name}_pairs')}_full_summaries.json"
-    truncated_base = get_truncated_filename(
-        dataset_name,
-        truncation_method,
-        salience_type,
-        cfg["budget"]
-    )
-    trunc_summary_file = f"data/processed/summaries/{truncated_base.replace('.json', '_summaries.json')}"
-
 
     candidates = [
         f"data/processed/summaries/{dataset_name}_full_pairs_full_summaries.json",
         f"data/processed/summaries/{dataset_name}_full_summaries.json",
-        full_summary_file
     ]
     full_file = next((p for p in candidates if os.path.exists(p)), None)
 
+    # Always evaluate full baseline once (idempotent — metrics.csv append is fine)
     full_context_scores = None
-    if skip_full and full_file:
+    if full_file:
         from src.evaluation import load_full_context_scores
         full_context_scores = load_full_context_scores(full_file)
-        
-        res_full = evaluate_summary_file(full_file)
-        save_evaluation_results(res_full)
+
+        baseline_key = f"{dataset_name}_full"
+        if baseline_key not in evaluated_baselines:
+            res_full = evaluate_summary_file(full_file, full_context_scores=None)
+            save_evaluation_results(res_full)
+            evaluated_baselines.add(baseline_key)
+    else:
+        print(f"[evaluate] WARNING: No full context file found for {dataset_name}")
+
+    truncated_base = get_truncated_filename(
+        dataset_name, truncation_method, salience_type, cfg["budget"]
+    )
+    trunc_summary_file = f"data/processed/summaries/{truncated_base.replace('.json', '_summaries.json')}"
 
     if not os.path.exists(trunc_summary_file):
         print(f"[evaluate] WARNING: truncated summary file not found: {trunc_summary_file}")
-    else:
-        res_trunc = evaluate_summary_file(trunc_summary_file, full_context_scores=full_context_scores)
-        save_evaluation_results(res_trunc)
+        return
+
+    res_trunc = evaluate_summary_file(
+        trunc_summary_file,
+        full_context_scores=full_context_scores  # now always passed when available
+    )
+    save_evaluation_results(res_trunc)
 
 # ------------------------------
 # 8. Visualization
@@ -346,6 +367,7 @@ def run_visualization(metrics_csv: str):
 def main():
     configs = load_dataset_config()
     os.makedirs("results", exist_ok=True)
+    evaluated_baselines = set()
 
     for dataset_name, cfg in configs.items():    
         print("\n" + "=" * 80)
@@ -372,7 +394,7 @@ def main():
                 )
 
                 run_summarization(dataset_name, cfg, truncation_method, salience_type)
-                run_evaluation(dataset_name, cfg, truncation_method, salience_type)
+                run_evaluation(dataset_name, cfg, truncation_method, salience_type, evaluated_baselines)
 
             print(f"[main] completed dataset: {dataset_name}")
 

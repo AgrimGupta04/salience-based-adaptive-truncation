@@ -243,16 +243,6 @@ def save_truncated(dataset_name: str, truncated_records: List[dict], token_budge
     print(f"Saved truncated dataset to {path}")
 
 
-def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
-    selected, used = [], 0
-    for ch in chunks:  ## already in original order
-        if used + ch["token_count"] > token_budget:
-            break
-        selected.append(ch)
-        used += ch["token_count"]
-    return selected if selected else [chunks[0]]
-
-
 def select_random_k_tokens(chunks: List[dict], token_budget: int, seed: int = 42) -> List[dict]:
     rng = np.random.default_rng(seed)
     shuffled = list(chunks)
@@ -273,7 +263,32 @@ def select_random_k_tokens(chunks: List[dict], token_budget: int, seed: int = 42
 
 
 def select_lead_n_chunks(chunks: List[dict], token_budget: int) -> List[dict]:
-    return select_first_k_tokens(chunks, token_budget)
+    """
+    Retains leading sentence-aligned chunks until budget is reached.
+    Unlike first_k, never splits a chunk — always preserves semantic boundaries.
+    Chunks are already sentence-aligned so this is the 'clean' positional baseline.
+    """
+    selected, used = [], 0
+    for ch in chunks:  # already in original order
+        if used + ch["token_count"] <= token_budget:
+            selected.append(ch)
+            used += ch["token_count"]
+        else:
+            break  # stop at first chunk that would exceed — no skipping
+    return selected if selected else [chunks[0]]
+
+def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
+    """
+    Greedily takes chunks in order, SKIPPING chunks that exceed remaining budget
+    to pack as close to budget as possible. Can pick non-contiguous early chunks.
+    """
+    selected, used = [], 0
+    for ch in chunks:
+        if used + ch["token_count"] <= token_budget:
+            selected.append(ch)
+            used += ch["token_count"]
+        # note: continues iterating unlike lead_n — tries to fill budget
+    return selected if selected else [chunks[0]]
 
 
 

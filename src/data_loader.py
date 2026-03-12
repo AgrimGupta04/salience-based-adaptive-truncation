@@ -11,7 +11,7 @@ from tqdm import tqdm
 import os
 from transformers import AutoTokenizer
 import nltk
-nltk.download('punkt', quiet=True)
+nltk.download('punkt_tab', quiet=True)
 
 _TOKENIZERS = {}
 
