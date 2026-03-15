@@ -51,12 +51,12 @@ SHARED_GEN_KWARGS = {
 }
 
 TRUNCATION_METHODS = [
-    ("salience", "tfidf"),
-    ("salience", "cosine"),
-    ("salience", "hybrid"),
-    ("first_k", None),
-    ("random_k", None),
-    ("lead_n", None),
+    # ("salience", "tfidf"),
+    # ("salience", "cosine"),
+    # ("salience", "hybrid"),
+    # ("first_k", None),
+    # ("random_k", None),
+    # ("lead_n", None),
 ]
 
 MODEL_COST_PER_1K = {
@@ -75,22 +75,22 @@ def load_dataset_config() -> Dict[str, dict]:
     Keep field names consistent with your download_datasets.py / data_loader mappings.
     """
     return {
-        "cnn_dailymail": {
-            "budget": 512,
-            "model": "facebook/bart-large-cnn",
-            "input_field": "article",
-            "summary_field": "highlights",
-            "max_chunk_tokens": 512,
-            "skip_full": False
-        },
-        "govreport": {
-            "budget": 4096,
-            "model": "allenai/led-base-16384",
-            "input_field": "report",
-            "summary_field": "summary",
-            "max_chunk_tokens": 1024,
-            "skip_full": False
-        },
+        # "cnn_dailymail": {
+        #     "budget": 512,
+        #     "model": "facebook/bart-large-cnn",
+        #     "input_field": "article",
+        #     "summary_field": "highlights",
+        #     "max_chunk_tokens": 512,
+        #     "skip_full": False
+        # },
+        # "govreport": {
+        #     "budget": 4096,
+        #     "model": "allenai/led-base-16384",
+        #     "input_field": "report",
+        #     "summary_field": "summary",
+        #     "max_chunk_tokens": 1024,
+        #     "skip_full": False
+        # },
         "arxiv": {
             "budget": 4096,
             "model": "allenai/led-large-16384-arxiv",
