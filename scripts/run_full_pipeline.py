@@ -369,7 +369,7 @@ def main():
     os.makedirs("results", exist_ok=True)
     evaluated_baselines = set()
 
-    for dataset_name, cfg in configs.items():    
+    for dataset_name, cfg in configs.items():
         print("\n" + "=" * 80)
         print(f"RUNNING PIPELINE FOR: {dataset_name}")
         print("=" * 80)
@@ -378,30 +378,34 @@ def main():
             ## 1. Prepare
             run_prepare_data(dataset_name, cfg)
 
-            ## 2. Embeddings
-            run_build_embeddings(f"data/processed/{dataset_name}_pairs.json", dataset_name)
-    
-            for truncation_method, salience_type in TRUNCATION_METHODS:
+            ## 2. Embeddings — skip for baseline only run
+            # run_build_embeddings(...)  # not needed for summarization
 
-                if truncation_method == "salience":
-                    run_salience_scoring(dataset_name, salience_type)
+            ## 3. Run full context baseline directly
+            if not cfg.get("skip_full", False):
+                baseline_model = cfg.get("model", "facebook/bart-large-cnn")
+                print(f"[main] Running full context baseline with {baseline_model}")
+                baseline_pipe = load_summarization_model(baseline_model)
 
-                run_truncation(
-                    dataset_name=dataset_name,
-                    token_budget=cfg["budget"],
-                    truncation_method=truncation_method,
-                    salience_type=salience_type
-                )
+                pairs_file = f"data/processed/{dataset_name}_full_pairs.json"
+                if os.path.exists(pairs_file):
+                    summarize_full_pairs(
+                        pairs_file,
+                        model_pipe=baseline_pipe,
+                        gen_kwargs=SHARED_GEN_KWARGS,
+                        batch_size=2,   # LED needs small batch
+                        force=False
+                    )
+                else:
+                    print(f"[main] ERROR: {pairs_file} not found")
 
-                run_summarization(dataset_name, cfg, truncation_method, salience_type)
-                run_evaluation(dataset_name, cfg, truncation_method, salience_type, evaluated_baselines)
-
-            print(f"[main] completed dataset: {dataset_name}")
+            print(f"[main] baseline complete for {dataset_name}")
 
         except Exception as e:
-            print(f"[main] ERROR processing {dataset_name}: {e}")
+            print(f"[main] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
 
-    run_visualization(metrics_csv="results/metrics.csv")
     print("\nALL DONE")
 
 if __name__ == "__main__":
