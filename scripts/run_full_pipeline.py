@@ -42,7 +42,7 @@ from src.utils import get_truncated_filename
 
 SHARED_GEN_KWARGS = {
     "max_new_tokens": 512,
-    "min_length": 150,
+    "min_length": 100,
     "num_beams": 4, 
     "early_stopping": True, 
     "do_sample": False, 
