@@ -2,9 +2,11 @@ import os
 import json 
 import traceback
 from typing import List, Dict
+import torch
 import numpy as np
 import csv
 from rouge_score import rouge_scorer
+from bert_score import score as bert_score 
 from src.cost_model import estimate_cost
 
 SUMMARIES_DIR = "data/processed/summaries/"
@@ -59,6 +61,26 @@ def load_full_context_scores(full_summary_path: str) -> Dict[str, List[float]]:
     loaded = load_summary_file(full_summary_path)
     return compute_rouge(loaded["references"], loaded["predictions"])
 
+def compute_bertscore(references: List[str], predictions: List[str], device = None):
+    """Rouge is lexical -> counts word overlaps.
+    BERTScore is semantic -> looks for meaning similarity using pre-trained language models.
+    
+    1. Load BertScore's scorer.
+    2. Compute F1 per pair.
+    3. Average the scores.
+    
+    Returns: Average BERTScore F1.
+    """
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    P, R, F1 = bert_score(predictions, references, lang = "en", device="cuda" if torch.cuda.is_available() else "cpu")
+
+    return {
+        "bert_score_f1": float(F1.mean()),
+    }
+
 def compute_token_stats(records: List[dict]) -> Dict[str, float]:
     """Our objective is mainly about token reduction VS summarization quality.
     So we must compuute
@@ -86,33 +108,30 @@ def compute_token_stats(records: List[dict]) -> Dict[str, float]:
     }
 
 def compute_cost_stats(records: List[dict], is_baseline: bool = False) -> Dict[str, float]:
-    """
-    Computes average and total USD cost using model-aware pricing.
-    """
     costs = []
-
     for r in records:
+        # Determine correct token count
         if is_baseline:
-            tokens_in = r.get("tokens_input", r.get("tokens_before"))
+            tokens_in = r.get("tokens_before")  # full input for baseline
         else:
-            tokens_in = r.get("tokens_input", r.get("tokens_after"))
-
+            tokens_in = r.get("tokens_after")   # truncated input for truncated
+        
         if tokens_in is None:
             continue
 
-        cost = estimate_cost(tokens_in=tokens_in, tokens_out=0, model_name="proxy")
+        model_name = r.get("model_name", "proxy")
+        cost = estimate_cost(tokens_in=tokens_in, tokens_out=0, model_name=model_name)
         if cost is not None:
             costs.append(cost)
 
     if not costs:
         return {"avg_cost_usd": None, "total_cost_usd": None}
-
     return {
         "avg_cost_usd": float(np.mean(costs)),
         "total_cost_usd": float(np.sum(costs))
     }
 
-def evaluate_summary_file(summary_json_path: str, full_context_scores: Dict[str, List[float]] = None) -> Dict[str, float]:
+def evaluate_summary_file(summary_json_path: str, use_bertscore: bool = True, full_context_scores: Dict[str, List[float]] = None) -> Dict[str, float]:
     try:
         dataset, salience_type, token_budget = parse_metadata_from_filename(summary_json_path)
         loaded = load_summary_file(summary_json_path)
@@ -127,6 +146,11 @@ def evaluate_summary_file(summary_json_path: str, full_context_scores: Dict[str,
             raise ValueError(f"No valid pairs found in {summary_json_path}")
 
         rouge_scores = compute_rouge(filtered_refs, filtered_preds)
+
+        bert_scores = compute_bertscore(
+            filtered_refs, filtered_preds
+        ) if use_bertscore else {}
+            
         token_stats = compute_token_stats(loaded["records"])
 
         is_baseline = (salience_type == "None" or "full_pairs" in summary_json_path)
@@ -138,9 +162,15 @@ def evaluate_summary_file(summary_json_path: str, full_context_scores: Dict[str,
             min_len = min(len(full_context_scores["rouge1_list"]), len(rouge_scores["rouge1_list"]))
             
             if min_len > 0:
-                aligned_full = full_context_scores["rouge1_list"][:min_len]
-                aligned_trunc = rouge_scores["rouge1_list"][:min_len]
-                sig_results = significance_test_bootstrap(aligned_full, aligned_trunc)
+                for metric in ["rouge1", "rougeL"]:
+                    aligned_full = full_context_scores[f"{metric}_list"][:min_len]
+                    aligned_trunc = rouge_scores[f"{metric}_list"][:min_len]
+
+                    sig = significance_test_bootstrap(aligned_full, aligned_trunc)
+
+                    sig_results.update({
+                        f"{metric}_{k}": v for k, v in sig.items()
+                    })
             else:
                 print(f"Warning: Score list is empty for {summary_json_path}, skipping significance.")
 
@@ -150,6 +180,7 @@ def evaluate_summary_file(summary_json_path: str, full_context_scores: Dict[str,
             "salience_type": salience_type,       
             "token_budget": token_budget,          
             **{k: rouge_scores[k] for k in ["rouge1", "rouge2", "rougeL"]},
+            **bert_scores,
             **token_stats,
             **cost_stats,
             **sig_results,         
@@ -195,8 +226,12 @@ def significance_test_bootstrap(full_scores, trunc_scores, n_samples=1000, seed=
 
 def parse_metadata_from_filename(filename: str):
     base = os.path.basename(filename).replace(".json", "")
-    parts = base.split("_")
-    dataset = parts[0]
+    known_datasets = ["cnn_dailymail", "govreport", "arxiv"]
+    dataset = next((d for d in known_datasets if base.startswith(d)), "unknown")
+    
+    remainder = base[len(dataset):].lstrip("_")
+    parts = remainder.split("_")
+    
     truncation_type = "None"
     token_budget = None
 
@@ -212,7 +247,7 @@ def parse_metadata_from_filename(filename: str):
     elif "lead" in parts:
         truncation_type = "lead_n"
 
-    # Fixed: Only check for "budget" since "token" isn't in the filename
+
     if "budget" in parts:
         try:
             token_budget = int(parts[parts.index("budget") + 1])
@@ -224,11 +259,16 @@ def parse_metadata_from_filename(filename: str):
 def save_evaluation_results(results: dict, out_path: str = "results/metrics.csv"):
     os.makedirs("results", exist_ok=True)
     FIELD_ORDER = [
-        "file", "dataset", "salience_type", "token_budget",
+        "file",
+        "dataset", 
+        "salience_type", 
+        "token_budget",
+        "bert_score_f1",
         "rouge1", "rouge2", "rougeL",
         "avg_tokens_before", "avg_tokens_after", "percentage_reduction",
         "avg_cost_usd", "total_cost_usd",
-        "mean_diff", "ci_low", "ci_high", "p_value",
+        "rouge1_mean_diff", "rouge1_ci_low", "rouge1_ci_high", "rouge1_p_value",
+        "rougeL_mean_diff", "rougeL_ci_low", "rougeL_ci_high", "rougeL_p_value"
     ]
 
     ## Ensure only valid keys included

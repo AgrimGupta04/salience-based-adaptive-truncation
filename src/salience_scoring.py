@@ -16,9 +16,29 @@ from sentence_transformers import SentenceTransformer
 import json
 import os
 from tqdm import tqdm
+import time
 
 DATA_PATH = "data/processed/"
 EMBEDDING_PATH = os.path.join(DATA_PATH, "embeddings")
+
+
+def compute_salience_with_timing(pairs, method, model=None, embedding_path=None, alpha=0.7):
+    """Wrapper that times salience computation and returns scores + timing dict."""
+    start = time.perf_counter()
+    scores = compute_salience(pairs, method, model, embedding_path, alpha)
+    elapsed = time.perf_counter() - start
+    
+    n_docs = len(set(p["id"].rsplit("_", 1)[0] for p in pairs))
+    timing = {
+        "method": method,
+        "total_sec": round(elapsed, 4),
+        "per_doc_sec": round(elapsed / max(n_docs, 1), 6),
+        "n_docs": n_docs,
+        "n_chunks": len(pairs)
+    }
+    print(f"[timing] {method}: {elapsed:.2f}s total | {timing['per_doc_sec']:.4f}s/doc | {n_docs} docs")
+    return scores, timing
+
 
 def compute_tfidf_salience(pairs, summary_field = "summary") -> List[float]:
     """Sentences that share more key terms (bigrams) with the reference summary are likely to be more salient.
