@@ -12,23 +12,23 @@ import tiktoken
 
 ## Define datasets and local save paths
 DATASETS = {
-    "cnn_dailymail": {
-        "hf_name": "cnn_dailymail",
-        "subset": "3.0.0",
-        "split": "test",
-        "input_field": "article",
-        "summary_field": "highlights",
-        "revision": "main",
-    },
-    "govreport": {
-        "hf_name": "ccdv/govreport-summarization",
-        "subset": None,
-        "split": "test",
-        "input_field": "document",
-        "summary_field": "summary",
-        "revision": "main",
-        "verification_mode": "no_checks",
-    },
+    # "cnn_dailymail": {
+    #     "hf_name": "cnn_dailymail",
+    #     "subset": "3.0.0",
+    #     "split": "test",
+    #     "input_field": "article",
+    #     "summary_field": "highlights",
+    #     "revision": "main",
+    # },
+    # "govreport": {
+    #     "hf_name": "ccdv/govreport-summarization",
+    #     "subset": None,
+    #     "split": "test",
+    #     "input_field": "document",
+    #     "summary_field": "summary",
+    #     "revision": "main",
+    #     "verification_mode": "no_checks",
+    # },
     "arxiv": {
         "hf_name": "ccdv/arxiv-summarization",
         "subset": None,
