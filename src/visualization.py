@@ -320,7 +320,7 @@ def plot_bootstrap_ci(dataset_name: str, n_rounds: int = 1000):
         print(f"[CI Plot] No truncated files found for {dataset_name}.")
         return
 
-    print(f"[CI Plot] Processing multiple methods for {dataset_name}...")
+    print(f"[CI Plot] Processing multiple methods for {dataset_name}.")
 
     ## Load Baseline Data
     full_data = {}
@@ -404,33 +404,6 @@ def plot_bootstrap_ci(dataset_name: str, n_rounds: int = 1000):
 
     if not results:
         return
-
-    ## Plot the aggregated CI comparison
-    plt.figure(figsize=(8, 6))
-    methods = [r['method'] for r in results]
-    means = [r['mean_diff'] for r in results]
-    
-    ## Error bar format: [ [distances below mean], [distances above mean] ]
-    yerr = [
-        [r['mean_diff'] - r['ci_low'] for r in results], 
-        [r['ci_high'] - r['mean_diff'] for r in results]
-    ]
-
-    plt.errorbar(x = methods, y = means, yerr = yerr, fmt = 'o', color = 'black', capsize = 8, markersize = 8)
-    
-    ## Adding a red dashed line at 0
-    plt.axhline(0, linestyle='--', color='red', alpha = 0.5, label = 'Baseline Quality (No Drop)')
-    
-    plt.ylabel("ROUGE-1 Drop (Full - Truncated) -> Lower is Better")
-    plt.title(f"95% CI of Quality Drop by Compression Method\n({dataset_name})")
-    plt.grid(axis = 'y', alpha = 0.2)
-    plt.legend()
-
-    out_path = f"results/plots/{dataset_name}_bootstrap_ci_comparison.png"
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    plt.savefig(out_path, dpi = 300, bbox_inches = "tight")
-    plt.close()
-    print(f"[CI Plot] Saved {out_path}")
 
     ## Plot the aggregated CI comparison
     plt.figure(figsize=(8, 6))

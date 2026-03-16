@@ -11,7 +11,7 @@ import numpy as np
 from typing import Dict
 import csv
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(os.path.join(os.path.dirname(__file__), ""))
 
 from src.data_loader import prepare_data, load_dataset
 from src.embedding import load_embedding_model, build_embedding_index
@@ -51,12 +51,12 @@ SHARED_GEN_KWARGS = {
 }
 
 TRUNCATION_METHODS = [
-    # ("salience", "tfidf"),
-    # ("salience", "cosine"),
-    # ("salience", "hybrid"),
-    # ("first_k", None),
-    # ("random_k", None),
-    # ("lead_n", None),
+    ("salience", "tfidf"),
+    ("salience", "cosine"),
+    ("salience", "hybrid"),
+    ("first_k", None),
+    ("random_k", None),
+    ("lead_n", None),
 ]
 
 MODEL_COST_PER_1K = {
@@ -75,22 +75,22 @@ def load_dataset_config() -> Dict[str, dict]:
     Keep field names consistent with your download_datasets.py / data_loader mappings.
     """
     return {
-        # "cnn_dailymail": {
-        #     "budget": 512,
-        #     "model": "facebook/bart-large-cnn",
-        #     "input_field": "article",
-        #     "summary_field": "highlights",
-        #     "max_chunk_tokens": 512,
-        #     "skip_full": False
-        # },
-        # "govreport": {
-        #     "budget": 4096,
-        #     "model": "allenai/led-base-16384",
-        #     "input_field": "report",
-        #     "summary_field": "summary",
-        #     "max_chunk_tokens": 1024,
-        #     "skip_full": False
-        # },
+        "cnn_dailymail": {
+            "budget": 512,
+            "model": "facebook/bart-large-cnn",
+            "input_field": "article",
+            "summary_field": "highlights",
+            "max_chunk_tokens": 512,
+            "skip_full": False
+        },
+        "govreport": {
+            "budget": 4096,
+            "model": "allenai/led-base-16384",
+            "input_field": "report",
+            "summary_field": "summary",
+            "max_chunk_tokens": 1024,
+            "skip_full": False
+        },
         "arxiv": {
             "budget": 4096,
             "model": "allenai/led-large-16384-arxiv",
@@ -106,7 +106,7 @@ def load_dataset_config() -> Dict[str, dict]:
 # 2. Prepare dataset
 # ------------------------------
 def run_prepare_data(dataset_name: str, cfg: dict) -> str:
-    print(f"\n[prepare] {dataset_name} —> loading raw dataset and preparing pairs")
+    print(f"\n[prepare] {dataset_name} -> loading raw dataset and preparing pairs")
     ds = load_dataset(dataset_name)
 
     pairs = prepare_data(
@@ -120,7 +120,7 @@ def run_prepare_data(dataset_name: str, cfg: dict) -> str:
     )
 
     if not cfg.get("skip_full", False):
-        print(f"[prepare] {dataset_name} —> preparing FULL pairs (no chunking) for baseline")
+        print(f"[prepare] {dataset_name} -> preparing FULL pairs (no chunking) for baseline")
         prepare_data(
             ds,
             dataset_name=dataset_name,
@@ -162,7 +162,7 @@ def run_salience_scoring(dataset_name: str, salience_type: str):
         method=salience_type,
         model=emb_model,
         embedding_path=emb_path,
-        alpha=0.7   # NOW EXPLICIT — was hidden default before
+        alpha=0.7  
     )
 
     # Save timing to a separate CSV for paper reporting
@@ -283,7 +283,6 @@ def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salienc
     ]
     full_file = next((p for p in candidates if os.path.exists(p)), None)
 
-    # Always evaluate full baseline once (idempotent — metrics.csv append is fine)
     full_context_scores = None
     if full_file:
         from src.evaluation import load_full_context_scores
@@ -308,7 +307,7 @@ def run_evaluation(dataset_name: str, cfg: dict, truncation_method: str, salienc
 
     res_trunc = evaluate_summary_file(
         trunc_summary_file,
-        full_context_scores=full_context_scores  # now always passed when available
+        full_context_scores=full_context_scores 
     )
     save_evaluation_results(res_trunc)
 
@@ -320,7 +319,7 @@ def run_visualization(metrics_csv: str):
         print(f"[visualize] CSV {metrics_csv} not found.")
         return
 
-    print(f"\n[visualize] Generating plots from {metrics_csv}...")
+    print(f"\n[visualize] Generating plots from {metrics_csv}.")
     df = load_metrics_csv(metrics_csv)
     os.makedirs("results/plots", exist_ok=True)
 
@@ -369,43 +368,39 @@ def main():
     os.makedirs("results", exist_ok=True)
     evaluated_baselines = set()
 
-    for dataset_name, cfg in configs.items():
+    for dataset_name, cfg in configs.items():    
         print("\n" + "=" * 80)
         print(f"RUNNING PIPELINE FOR: {dataset_name}")
         print("=" * 80)
 
         try:
-            ## 1. Prepare
+            # 1. Prepare
             run_prepare_data(dataset_name, cfg)
 
-            ## 2. Embeddings — skip for baseline only run
-            # run_build_embeddings(...)  # not needed for summarization
+            # 2. Embeddings
+            run_build_embeddings(f"data/processed/{dataset_name}_pairs.json", dataset_name)
+    
+            for truncation_method, salience_type in TRUNCATION_METHODS:
 
-            ## 3. Run full context baseline directly
-            if not cfg.get("skip_full", False):
-                baseline_model = cfg.get("model", "facebook/bart-large-cnn")
-                print(f"[main] Running full context baseline with {baseline_model}")
-                baseline_pipe = load_summarization_model(baseline_model)
+                if truncation_method == "salience":
+                    run_salience_scoring(dataset_name, salience_type)
 
-                pairs_file = f"data/processed/{dataset_name}_full_pairs.json"
-                if os.path.exists(pairs_file):
-                    summarize_full_pairs(
-                        pairs_file,
-                        model_pipe=baseline_pipe,
-                        gen_kwargs=SHARED_GEN_KWARGS,
-                        batch_size=2,   # LED needs small batch
-                        force=False
-                    )
-                else:
-                    print(f"[main] ERROR: {pairs_file} not found")
+                run_truncation(
+                    dataset_name=dataset_name,
+                    token_budget=cfg["budget"],
+                    truncation_method=truncation_method,
+                    salience_type=salience_type
+                )
 
-            print(f"[main] baseline complete for {dataset_name}")
+                run_summarization(dataset_name, cfg, truncation_method, salience_type)
+                run_evaluation(dataset_name, cfg, truncation_method, salience_type, evaluated_baselines)
+
+            print(f"[main] completed dataset: {dataset_name}")
 
         except Exception as e:
-            print(f"[main] ERROR: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[main] ERROR processing {dataset_name}: {e}")
 
+    run_visualization(metrics_csv="results/metrics.csv")
     print("\nALL DONE")
 
 if __name__ == "__main__":

@@ -211,7 +211,7 @@ def truncate_dataset(dataset_name: str, token_budget: int, truncation_method: st
 
         processed += 1
         if processed % checkpoint_every == 0:
-            print(f"[checkpoint] Saving partial — {processed} docs...")
+            print(f"[checkpoint] Saving partial {processed} docs.")
             save_truncated(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
 
     save_truncated(dataset_name, truncated_records, token_budget, truncation_method, salience_type)
@@ -265,7 +265,7 @@ def select_random_k_tokens(chunks: List[dict], token_budget: int, seed: int = 42
 def select_lead_n_chunks(chunks: List[dict], token_budget: int) -> List[dict]:
     """
     Retains leading sentence-aligned chunks until budget is reached.
-    Unlike first_k, never splits a chunk — always preserves semantic boundaries.
+    Unlike first_k, never splits a chunk always preserves semantic boundaries.
     Chunks are already sentence-aligned so this is the 'clean' positional baseline.
     """
     selected, used = [], 0
@@ -274,12 +274,12 @@ def select_lead_n_chunks(chunks: List[dict], token_budget: int) -> List[dict]:
             selected.append(ch)
             used += ch["token_count"]
         else:
-            break  # stop at first chunk that would exceed — no skipping
+            break  # stop at first chunk that would exceed budget
     return selected if selected else [chunks[0]]
 
 def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
     """
-    Greedily takes chunks in order, SKIPPING chunks that exceed remaining budget
+    Greedily takes chunks in order, skipping chunks that exceed remaining budget
     to pack as close to budget as possible. Can pick non-contiguous early chunks.
     """
     selected, used = [], 0
@@ -287,7 +287,6 @@ def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:
         if used + ch["token_count"] <= token_budget:
             selected.append(ch)
             used += ch["token_count"]
-        # note: continues iterating unlike lead_n — tries to fill budget
     return selected if selected else [chunks[0]]
 
 
