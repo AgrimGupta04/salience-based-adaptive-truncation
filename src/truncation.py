@@ -269,12 +269,12 @@ def select_lead_n_chunks(chunks: List[dict], token_budget: int) -> List[dict]:
     Chunks are already sentence-aligned so this is the 'clean' positional baseline.
     """
     selected, used = [], 0
-    for ch in chunks:  # already in original order
+    for ch in chunks:  ## already in original order
         if used + ch["token_count"] <= token_budget:
             selected.append(ch)
             used += ch["token_count"]
         else:
-            break  # stop at first chunk that would exceed budget
+            break  ## stop at first chunk that would exceed budget
     return selected if selected else [chunks[0]]
 
 def select_first_k_tokens(chunks: List[dict], token_budget: int) -> List[dict]:

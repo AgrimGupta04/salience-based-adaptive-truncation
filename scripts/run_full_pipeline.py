@@ -41,7 +41,7 @@ from src.visualization import (
 from src.utils import get_truncated_filename
 
 SHARED_GEN_KWARGS = {
-    "max_new_tokens": 512,
+    "max_new_tokens": 512,  ## 256 max and 64 min for cnn_dailymail
     "min_length": 150,
     "num_beams": 4, 
     "early_stopping": True, 

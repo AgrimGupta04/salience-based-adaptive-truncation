@@ -65,7 +65,6 @@ def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
         
         if summary_field in aliases and aliases[summary_field] in sample:
             summary_field = aliases[summary_field]
-        ## Generic fallback: ArXiv always has 'abstract'
         elif "abstract" in sample:
             summary_field = "abstract"
         else:
@@ -77,7 +76,7 @@ def extract_summary(sample: Dict[str, Any], summary_field: str) -> str:
     summary = sample[summary_field]
 
     if isinstance(summary, dict):
-        # Try common keys
+        # Trying common keys
         for key in ["summary", "summary_text", "abstract", "highlights"]:
             if key in summary:
                 summary = summary[key]

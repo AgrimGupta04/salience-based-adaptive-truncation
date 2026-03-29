@@ -101,10 +101,10 @@ def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
         "Embeddings do not align with pairs.json ordering."
     )
 
-    # extract document IDs
+    ## extract document IDs
     doc_ids = [p["id"].rsplit("_", 1)[0] for p in pairs]
 
-    # unique doc → summary
+    ## unique doc -> summary
     doc_to_summary = {}
     for p, doc in zip(pairs, doc_ids):
         if doc not in doc_to_summary:
@@ -113,7 +113,7 @@ def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
     unique_docs = list(doc_to_summary.keys())
     unique_summaries = [doc_to_summary[d] for d in unique_docs]
 
-    # Encode summary embeddings in batches
+    ## Encode summary embeddings in batches
     summary_embs = model.encode(
         unique_summaries,
         convert_to_numpy=True,
@@ -122,13 +122,13 @@ def compute_cosine_salience(pairs, model, embedding_path) -> List[float]:
         show_progress_bar=True
     )
 
-    # Map: doc → summary embedding
+    ## Map: doc → summary embedding
     doc_to_emb = {doc: summary_embs[i] for i, doc in enumerate(unique_docs)}
 
-    # Build aligned array
+    ## Build aligned array
     aligned_summary_embs = np.vstack([doc_to_emb[doc] for doc in doc_ids])
 
-    # embeddings from embeddings.npy are normalized
+    ## embeddings from embeddings.npy are normalized
     cosine_scores = np.sum(embeddings * aligned_summary_embs, axis=1)
 
     return minmax_scale(cosine_scores)  ## Normalize to [0,1]

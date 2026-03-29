@@ -110,11 +110,11 @@ def compute_token_stats(records: List[dict]) -> Dict[str, float]:
 def compute_cost_stats(records: List[dict], is_baseline: bool = False) -> Dict[str, float]:
     costs = []
     for r in records:
-        # Determine correct token count
+        ## Determine correct token count
         if is_baseline:
-            tokens_in = r.get("tokens_before")  # full input for baseline
+            tokens_in = r.get("tokens_before")  ## full input for baseline
         else:
-            tokens_in = r.get("tokens_after")   # truncated input for truncated
+            tokens_in = r.get("tokens_after")   ## truncated input for truncated
         
         if tokens_in is None:
             continue
